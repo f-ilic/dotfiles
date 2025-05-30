@@ -77,14 +77,6 @@
         "command": "workbench.action.focusActiveEditorGroup"
     },
     {
-        "key": "cmd+k cmd+shift+[",
-        "command": "workbench.action.focusNextGroup"
-    },
-    {
-        "key": "cmd+k cmd+shift+]",
-        "command": "workbench.action.focusPreviousGroup"
-    },
-    {
         "key": "shift+cmd+j",
         "command": "-workbench.action.search.toggleQueryDetails",
         "when": "inSearchEditor || searchViewletFocus"
@@ -138,13 +130,47 @@
         "when": "hasSearchResult || inSearchEditor"
     },
     {
-        "key": "shift+alt+f",
+        "key": "alt+g",
         "command": "editor.action.wordHighlight.next",
+        "when": "editorTextFocus && hasWordHighlights"
+    },
+    {
+        "key": "alt+shift+g",
+        "command": "editor.action.wordHighlight.prev",
         "when": "editorTextFocus && hasWordHighlights"
     },
     {
         "key": "f7",
         "command": "-editor.action.wordHighlight.next",
         "when": "editorTextFocus && hasWordHighlights"
+    },
+    {
+        "key": "cmd+k left",
+        "command": "-views.moveViewLeft",
+        "when": "focusedView != ''"
+    },
+    {
+        "key": "cmd+k right",
+        "command": "-workbench.action.moveActiveEditorGroupRight"
+    },
+    {
+        "key": "cmd+k left",
+        "command": "workbench.action.focusLeftGroup"
+    },
+    {
+        "key": "cmd+k cmd+left",
+        "command": "-workbench.action.focusLeftGroup"
+    },
+    {
+        "key": "cmd+k right",
+        "command": "workbench.action.focusRightGroup"
+    },
+    {
+        "key": "cmd+k cmd+right",
+        "command": "-workbench.action.focusRightGroup"
+    },
+    {
+        "key": "cmd+k shift+cmd+right",
+        "command": "-workbench.action.moveEditorRightInGroup"
     },
 ]
