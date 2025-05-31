@@ -1,0 +1,37 @@
+(defcfg
+  input  (device-file "/dev/input/by-id/usb-Apple_Inc._Magic_Keyboard_with_Numeric_Keypad_F0T2037003NJKNQAJ-if01-event-kbd")
+  output (uinput-sink "kmonad")
+  fallthrough true
+  allow-cmd true
+)
+
+(defalias 
+navlayer (layer-toggle nav)
+)
+
+(defsrc
+  esc  f1   f2   f3   f4    f5   f6   f7   f8   f9   f10  f11  f12               f13    f14  f15        
+  grv  1    2    3    4     5    6    7    8    9    0    -    =     bspc          fn home pgup
+  tab  q    w    e    r     t    y    u    i    o    p    [    ]     \             del    end  pgdn 
+  caps a    s    d    f     g    h    j    k    l    ;    '           ret                                 
+  lsft z    x    c    v     b    n    m    ,    .    /                rsft               up        
+  lctl lmet lalt             spc                    rmet ralt rctl                 left down right
+)
+
+(deflayer base
+  esc  f1   f2   f3   f4    f5   f6   f7   f8   f9   f10  f11  f12               f13    f14  f15        
+  grv  1    2    3    4     5    6    7    8    9    0    -    =     bspc          fn home pgup
+  tab  q    w    e    r     t    y    u    i    o    p    [    ]     \             del    end  pgdn 
+  @navlayer a    s    d    f     g    h    j    k    l    ;    '           ret                                 
+  lsft z    x    c    v     b    n    m    ,    .    /                rsft               up        
+  lctl lalt lmet             spc                    rmet ralt rctl                 left down right
+)
+
+(deflayer nav
+  esc  f1   f2   f3   f4    f5   f6   f7   f8   f9   f10  f11  f12               f13    f14   f15        
+  grv  A-1    A-2    A-3    A-4     A-5    A-6    A-7     A-8     A-9    A-0    A--    A-=      bspc             fn      home  pgup
+  tab  esc    A-w    A-e    A-r     A-t    pgup   home    up      end    A-p    A-[    A-]     A-\              del     end   pgdn 
+  lalt A-a    A-s    A-d    A-f     A-g    bks    left    down    right  del    A-'            ret                                 
+  lsft A-z    A-x    A-c    A-v     A-b    pgdn   A-m     A-,     A-.    A-/                   rsft                    up        
+  lctl  lctl lmet           ret                    rmet ralt rctl                                              left down right
+)
