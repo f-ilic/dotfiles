@@ -1,0 +1,13 @@
+[Unit]
+Description=Apple Fullsize (White) Keyboard
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/f/bin/kmonad /home/f/dotfiles/kmonad_cfg/applekeyboard_fullsize.kbd
+Restart=always
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
