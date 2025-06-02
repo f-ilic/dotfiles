@@ -30,8 +30,8 @@ navlayer (layer-toggle nav)
 (deflayer nav
   esc  f1   f2   f3   f4    f5   f6   f7   f8   f9   f10  f11  f12               f13    f14   f15        
   grv  A-1    A-2    A-3    A-4     A-5    A-6    A-7     A-8     A-9    A-0    A--    A-=      bspc             fn      home  pgup
-  tab  esc    A-w    A-e    A-r     A-t    pgup   home    up      end    A-p    A-[    A-]     A-\              del     end   pgdn 
+  tab  esc    A-w    A-e    A-r     A-t    A-y   home    up      end    A-p    A-[    A-]     A-\              del     end   pgdn 
   lalt A-a    A-s    A-d    A-f     A-g    bks    left    down    right  del    A-'            ret                                 
-  lsft A-z    A-x    A-c    A-v     A-b    pgdn   A-m     A-,     A-.    A-/                   rsft                    up        
+  lsft A-z    A-x    A-c    A-v     A-b    pgup   pgdn     A-,     A-.    A-/                   rsft                    up        
   lctl  lctl lmet           ret                    rmet ralt rctl                                              left down right
 )

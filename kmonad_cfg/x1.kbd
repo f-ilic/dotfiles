@@ -30,8 +30,8 @@ navlayer (layer-toggle nav)
 (deflayer nav
   esc  A-f1   A-f2   A-f3   A-f4   A-f5   A-f6    A-f7   A-f8     A-f9    A-f10     A-f11  A-f12
   grv  A-1    A-2    A-3    A-4    A-5    A-6     A-7     A-8     A-9     A-0    A--    A-=    A-bspc
-  tab  esc    A-w    A-e    A-r    A-t    pgup    home    up      end     A-p    A-[    A-]    A-\
+  tab  esc    A-w    A-e    A-r    A-t    A-y    home    up      end     A-p    A-[    A-]    A-\
   lalt A-a    A-s    A-d    A-f    A-g    bks     left    down    right del  A-'    A-ret
-  lsft A-z    A-x    A-c    A-v    A-b    pgdn    A-m     A-,     A-.    A-/    rsft
+  lsft A-z    A-x    A-c    A-v    A-b    pgup    pgdn     A-,     A-.    A-/    rsft
   lctl lmet   lctl              ret       rmet    fn      rctl
 )
