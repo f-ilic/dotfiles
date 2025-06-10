@@ -17,9 +17,11 @@
     "Right": "CursorRight",
     "ShiftDown": "SelectDown",
     "ShiftLeft": "SelectLeft",
-    "ShiftPageDown": "SelectPageDown",
     "ShiftPageUp": "SelectPageUp",
+    "ShiftPageDown": "SelectPageDown",
     "ShiftRight": "SelectRight",
     "ShiftUp": "SelectUp",
-    "Up": "CursorUp"
+    "Up": "CursorUp",
+    "Alt-p": "CommandMode",
+    "Escape": "Quit",
 }
