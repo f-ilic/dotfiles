@@ -5,6 +5,9 @@ export CLICOLOR=1
 export LC_ALL=en_US.UTF-8
 alias ll='ls -la'
 
+export EDITOR=micro
+export VISUAL="$EDITOR"
+
 # FZF configuration
 source <(fzf --zsh)
 export FZF_DEFAULT_OPTS='--bind=ctrl-k:kill-line'
