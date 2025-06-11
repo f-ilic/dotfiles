@@ -32,13 +32,13 @@ function obj:start()
     
     remap({'alt', 'cmd'}, 'j', pressFn({'alt'}, 'left'))
     remap({'alt', 'cmd'}, 'l', pressFn({'alt'}, 'right'))
-    remap({'alt', 'cmd', 'shift'}, 'j', pressFn({'alt shift'}, 'left'))
-    remap({'alt', 'cmd', 'shift'}, 'l', pressFn({'alt shift'}, 'right'))
+    remap({'alt', 'cmd', 'shift'}, 'j', pressFn({'alt, shift'}, 'left'))
+    remap({'alt', 'cmd', 'shift'}, 'l', pressFn({'alt, shift'}, 'right'))
     
     remap({'alt'}, 'o', pressFn({'ctrl'}, 'e'))
     remap({'alt'}, 'u', pressFn({'ctrl'}, 'a'))
-    remap({'alt', 'shift'}, 'o', pressFn({'ctrl shift'}, 'e'))
-    remap({'alt', 'shift'}, 'u', pressFn({'ctrl shift'}, 'a'))
+    remap({'alt', 'shift'}, 'o', pressFn({'shift'}, 'end'))
+    remap({'alt', 'shift'}, 'u', pressFn({'shift'}, 'home'))
 
     remap({'alt'}, 'n', pressFn('pageup'))
     remap({'alt'}, 'm', pressFn('pagedown'))

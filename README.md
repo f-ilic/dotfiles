@@ -1,9 +1,10 @@
 # dotfiles
 
 
-The important files in this repository are:
-- hammerspoon, including the keyboard remapping
-- zshrc
-- ranger
-- tmux
-- gitk
+
+
+
+# macos
+
+remove the mappings of shift+pgup, shift+pgdown in iterm2.
+otherwise micro does not work properly.
