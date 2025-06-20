@@ -1,0 +1,22 @@
+{
+    // ----------------- FONT -----------------
+    "editor.fontFamily": "Fira Code",
+    "editor.inlineSuggest.fontFamily": "Fira Code",
+    "terminal.integrated.fontFamily": "Fira Code",
+    // can't disable ligatures in debug console
+    // therefore keep the default font that does not
+    // have ligatures
+    // "debug.console.fontFamily": "Fira Code",
+    "terminal.integrated.fontLigatures.enabled": false,
+    "workbench.fontAliasing": "antialiased",
+    "editor.fontLigatures": false,
+    // ----------------- EDITOR -----------------
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "editor.accessibilitySupport": "off",
+    "editor.autoClosingBrackets": "never",
+    "editor.autoClosingDelete": "never",
+    "editor.autoSurround": "never",
+    "editor.minimap.enabled": false,
+    "editor.inlineSuggest.enabled": true
+ }
