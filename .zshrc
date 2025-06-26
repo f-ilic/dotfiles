@@ -21,6 +21,15 @@ compinit
 _comp_options+=(globdots)		# Include hidden files.
 
 
+# -------------- YAZI  --------------
+function y() {
+	local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
+	yazi "$@" --cwd-file="$tmp"
+	IFS= read -r -d '' cwd < "$tmp"
+	[ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && builtin cd -- "$cwd"
+	rm -f -- "$tmp"
+}
+
 # ------------------ ctr+o for ranger navigation ----------------------------
 # Idea adapted from https://gist.github.com/LukeSmithxyz/e62f26e55ea8b0ed41a65912fbebbe52
 # ranger_cd function: change directory using ranger
@@ -38,20 +47,21 @@ ranger_cd() {
 }
 
 # zsh widget to preserve command line buffer
-ranger_cd_widget() {
+filemanager() {
   local saved_buffer="$BUFFER"
   local saved_cursor="$CURSOR"
 
-  zle clear-screen   # optional: clear screen before launching ranger
-  ranger_cd
+  zle clear-screen   # clear screen before launching ranger
+  y # if yazi
+  # ranger_cd # if ranger
 
   BUFFER="$saved_buffer"
   CURSOR="$saved_cursor"
   zle reset-prompt
 }
 
-zle -N ranger_cd_widget
-bindkey '^o' ranger_cd_widget
+zle -N filemanager
+bindkey '^o' filemanager
 # ---------------------------------------------------------------------
 
 
