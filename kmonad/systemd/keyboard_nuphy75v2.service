@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/f/bin/kmonad /home/f/dotfiles/kmonad_cfg/nuphy75v2.kbd
+ExecStart=/home/f/bin/kmonad /home/f/dotfiles/kmonad/config/nuphy75v2.kbd
 Restart=always
 User=root
 Group=root
