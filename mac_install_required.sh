@@ -47,18 +47,6 @@ brew install --cask font-fira-code
 echo "🔧 Setting up fzf integration..."
 $(brew --prefix)/opt/fzf/install --key-bindings --completion --no-update-rc
 
-# Make zsh the default shell if it isn't already
-if [[ "$SHELL" != "$(which zsh)" ]]; then
-    echo "🐚 Setting zsh as default shell..."
-    sudo chsh -s $(which zsh) $(whoami)
-    echo "⚠️  Please restart your terminal for the shell change to take effect"
-fi
-
-# Create ~/bin directory if it doesn't exist (referenced in .zshrc PATH)
-if [[ ! -d "$HOME/bin" ]]; then
-    echo "📁 Creating ~/bin directory..."
-    mkdir -p "$HOME/bin"
-fi
 
 echo "✅ Installation complete!"
 echo ""
