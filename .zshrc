@@ -17,7 +17,7 @@ autoload -U compinit
 zstyle ':completion:*' menu select
 zmodload zsh/complist
 compinit
-_comp_options+=(globdots) # Include hidden files.
+_comp_options+=(globdots)		# Include hidden files.
 
 # ----------------- aliases -------------------
 alias ll='ls -la'
@@ -47,3 +47,10 @@ filemanager() {
 zle -N filemanager
 bindkey '^o' filemanager
 # ---------------------------------------------------------------------
+
+
+# -------------------- syntax highlighting for zsh --------------------
+# if mac
+source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+# if linux
+#source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
