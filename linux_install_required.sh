@@ -20,11 +20,25 @@ echo "🛠️ Installing additional tools..."
 sudo snap install yazi --classic
 sudo snap install ghostty --classic
 
+# Install kmonad
+echo "⌨️ Installing kmonad..."
+if ! command -v kmonad &> /dev/null; then
+    wget -O /tmp/kmonad https://github.com/kmonad/kmonad/releases/latest/download/kmonad
+    sudo mv /tmp/kmonad /usr/local/bin/kmonad
+    sudo chmod +x /usr/local/bin/kmonad
+fi
+
 # Make zsh the default shell if it isn't already
 if [[ "$SHELL" != "$(which zsh)" ]]; then
     echo "🐚 Setting zsh as default shell..."
     sudo chsh -s $(which zsh) $(whoami)
     echo "⚠️  Please restart your computer for the change to take effect"
+fi
+
+# Create ~/bin directory if it doesn't exist
+if [[ ! -d "$HOME/bin" ]]; then
+    echo "📁 Creating ~/bin directory..."
+    mkdir -p "$HOME/bin"
 fi
 
 
@@ -38,6 +52,7 @@ echo "  - micro (text editor)"
 echo "  - zsh-syntax-highlighting"
 echo "  - Fira Code font"
 echo "  - ghostty (terminal)"
+echo "  - kmonad (keyboard remapper)"
 echo ""
 echo "🔄 Next steps:"
 echo "  1. Restart your terminal or run: source ~/.zshrc"

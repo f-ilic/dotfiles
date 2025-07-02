@@ -5,7 +5,7 @@
 
 set -e  # Exit on any error
 
-echo "🚀 Starting macOS dependency installation for .zshrc dotfile..."
+echo "🚀 [macOS] Starting installation of .zshrc dotfile requirements and customizations"
 
 # Check if Homebrew is installed
 if ! command -v brew &> /dev/null; then
@@ -34,18 +34,23 @@ brew install fzf
 brew install yazi
 brew install micro
 brew install zsh-syntax-highlighting
+brew install lazygit
 
 echo "🛠️ Installing additional tools..."
 brew install --cask ghostty
 brew install --cask hammerspoon
+brew install --cask rectangle
+brew install --cask alt-tab
 
 # Install Fira Code font
 echo "🔤 Installing Fira Code font..."
 brew install --cask font-fira-code
 
-# Setup fzf key bindings and fuzzy completion
-echo "🔧 Setting up fzf integration..."
-$(brew --prefix)/opt/fzf/install --key-bindings --completion --no-update-rc
+# Create ~/bin directory if it doesn't exist
+if [[ ! -d "$HOME/bin" ]]; then
+    echo "📁 Creating ~/bin directory..."
+    mkdir -p "$HOME/bin"
+fi
 
 
 echo "✅ Installation complete!"
@@ -55,8 +60,11 @@ echo "  - fzf (fuzzy finder)"
 echo "  - yazi (file manager)"
 echo "  - micro (text editor)"
 echo "  - zsh-syntax-highlighting"
+echo "  - lazygit (git text interface)"
 echo "  - ghostty (terminal)"
 echo "  - hammerspoon (automation)"
+echo "  - rectangle (window manager)"
+echo "  - alt-tab (app switcher)"
 echo "  - Fira Code font"
 echo ""
 echo "🔄 Next steps:"
