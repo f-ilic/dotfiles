@@ -23,8 +23,3 @@ desc = "Delete all bookmarks"
 on   = "<Esc>"
 run  = "close"
 desc = "Cancel input"
-
-
-[[mgr.prepend_keymap]]
-on = "<P>"
-run = 'shell -- qlmanage -p "$@"'
