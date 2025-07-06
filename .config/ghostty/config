@@ -1,12 +1,12 @@
 font-family = Fira Code
 font-size = 14
 font-feature=-calt, -liga, -dlig
-theme = dark:GitHub-Dark-Default,light:Github-Light-Default
+theme = dark:GitHub-Dark-Default,light:xcodelighthc
 
 cursor-style = block
 cursor-style-blink = false
 
-shell-integration-features = no-cursor,sudo,no-title
+shell-integration-features = no-cursor,sudo
 
 macos-option-as-alt = true
 macos-titlebar-proxy-icon = hidden
