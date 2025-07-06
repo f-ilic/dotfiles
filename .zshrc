@@ -1,26 +1,21 @@
 # REQUIREMENTS: fzf, yazi, zsh, zsh-syntax-highlighting
 
-export PATH="$HOME/bin:$PATH"
+# ----------------- exports -------------------
 export PS1="%n@%m:%~%# "
 export CLICOLOR=1
 export LC_ALL=en_US.UTF-8
 
+export PATH="$HOME/bin:$PATH"
+export TERM="xterm-256color"
+
 export EDITOR=micro
 export VISUAL="$EDITOR"
 
-# FZF configuration
-source <(fzf --zsh)
-export FZF_DEFAULT_OPTS='--bind=ctrl-k:kill-line'
-
-# Basic auto/tab complete for zsh:
-autoload -U compinit
-zstyle ':completion:*' menu select
-zmodload zsh/complist
-compinit
-_comp_options+=(globdots)		# Include hidden files.
 
 # ----------------- aliases -------------------
 alias ll='ls -la'
+alias la='ls -A'
+alias l='ls -CF'
 
 # -------------- file management --------------
 function y() {
@@ -48,6 +43,17 @@ zle -N filemanager
 bindkey '^o' filemanager
 # ---------------------------------------------------------------------
 
+# ---------------------------- OTHER ----------------------------------
+# FZF configuration
+source <(fzf --zsh)
+export FZF_DEFAULT_OPTS='--bind=ctrl-k:kill-line'
+
+# Basic auto/tab complete for zsh:
+autoload -U compinit
+zstyle ':completion:*' menu select
+zmodload zsh/complist
+compinit
+_comp_options+=(globdots)
 
 # -------------------- syntax highlighting for zsh --------------------
 # if mac
