@@ -1,21 +1,23 @@
 # REQUIREMENTS: fzf, yazi, zsh, zsh-syntax-highlighting
-
 # ----------------- exports -------------------
-export PS1="%n@%m:%~%# "
+autoload -Uz colors && colors
+PROMPT="%n@%m:%{$fg[cyan]%}%~%{$reset_color%}> "
 export CLICOLOR=1
 export LC_ALL=en_US.UTF-8
 
 export PATH="$HOME/bin:$PATH"
-export TERM="xterm-256color"
 
-export EDITOR=micro
-export VISUAL="$EDITOR"
-
+export EDITOR='env TERM=xterm-256color micro'
+export VISUAL="$EDITOR"           # optional but handy
 
 # ----------------- aliases -------------------
 alias ll='ls -la'
 alias la='ls -A'
 alias l='ls -CF'
+
+# Micro does not like TERM=tmux..., so lets always
+# start it with xterm-256color.
+micro() { TERM=xterm-256color command micro "$@"; }
 
 # -------------- file management --------------
 function y() {
@@ -54,6 +56,9 @@ zstyle ':completion:*' menu select
 zmodload zsh/complist
 compinit
 _comp_options+=(globdots)
+
+# Disable Alt+p for tmux compatibility
+bindkey -r '^[p'
 
 # -------------------- syntax highlighting for zsh --------------------
 # if mac

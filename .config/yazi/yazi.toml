@@ -1,3 +1,6 @@
 [mgr]
 linemode = "size"
 ratio = [2,3,3]
+
+[preview]
+protocol = "kitty"
