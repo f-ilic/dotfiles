@@ -21,7 +21,5 @@
     "ShiftUp": "SelectUp",
     "Alt-I": "MoveLinesUp",
     "Alt-K": "MoveLinesDown",
-    "Alt-A": "SelectAll",
-    "Down": "FindNext",
-    "Up": "FindPrevious"
+    "Alt-A": "SelectAll"
 }
