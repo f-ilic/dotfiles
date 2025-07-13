@@ -8,12 +8,14 @@ export LC_ALL=en_US.UTF-8
 export PATH="$HOME/bin:$PATH"
 
 export EDITOR='env TERM=xterm-256color micro'
-export VISUAL="$EDITOR"           # optional but handy
+export VISUAL="$EDITOR"
 
 # ----------------- aliases -------------------
 alias ll='ls -la'
 alias la='ls -A'
 alias l='ls -CF'
+
+alias lg='lazygit'
 
 # Micro does not like TERM=tmux..., so lets always
 # start it with xterm-256color.
