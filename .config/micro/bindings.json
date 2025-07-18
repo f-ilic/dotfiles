@@ -21,5 +21,6 @@
     "ShiftUp": "SelectUp",
     "Alt-I": "MoveLinesUp",
     "Alt-K": "MoveLinesDown",
-    "Alt-A": "SelectAll"
+    "Alt-A": "SelectAll",
+    "CtrlO": "lua:fzf.fzf"
 }
