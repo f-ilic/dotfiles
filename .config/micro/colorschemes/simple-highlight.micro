@@ -20,11 +20,9 @@ color-link diff-deleted "red"
 color-link gutter-error ",red"
 color-link gutter-warning "red"
 color-link cursor-line "black"
-color-link color-column "white"
+color-link color-column "black"
 color-link type.extended "default"
-#No bracket highlighting.
 color-link symbol.brackets "default"
-#Color shebangs the comment color
 color-link preproc.shebang "comment"
 color-link match-brace ",magenta"
 color-link tab-error "brightred"

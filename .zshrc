@@ -8,9 +8,9 @@ export LC_ALL=en_US.UTF-8
 export PATH="$HOME/bin:$PATH"
 
 export EDITOR='env TERM=xterm-256color micro'
-export VISUAL="$EDITOR"           # optional but handy
+export VISUAL="$EDITOR"
 export XDG_CONFIG_HOME="$HOME/.config"
-
+export FZF_DEFAULT_OPTS="--border --layout reverse --bind=ctrl-k:kill-line"
 # ----------------- aliases -------------------
 alias ll='ls -la'
 alias la='ls -A'
@@ -18,17 +18,24 @@ alias l='ls -CF'
 
 alias lg='lazygit'
 
-# Micro does not like TERM=tmux..., so lets always
-# start it with xterm-256color.
+# Micro does not like TERM=tmux..., so  always start it with xterm-256color.
 micro() { TERM=xterm-256color command micro "$@"; }
 
 # -------------- file management --------------
 function y() {
-	local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
-	yazi "$@" --cwd-file="$tmp"
-	IFS= read -r -d '' cwd < "$tmp"
-	[ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && builtin cd -- "$cwd"
-	rm -f -- "$tmp"
+  local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
+  exec < /dev/tty  # Ensure TTY input for fzf to work correctly
+
+  local fzf_opts_extra="
+	 --style=full --preview='fzf-preview.sh {}'
+  "
+
+  FZF_DEFAULT_OPTS="$FZF_DEFAULT_OPTS $fzf_opts_extra" \
+    command yazi "$@" --cwd-file="$tmp"
+
+  IFS= read -r -d '' cwd < "$tmp"
+  [ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && builtin cd -- "$cwd"
+  rm -f -- "$tmp"
 }
 
 # zsh widget to preserve command line buffer
@@ -36,8 +43,8 @@ filemanager() {
   local saved_buffer="$BUFFER"
   local saved_cursor="$CURSOR"
 
-  zle clear-screen   # clear screen before launching ranger
-  y # this calls the function above
+  zle clear-screen
+  y
 
   BUFFER="$saved_buffer"
   CURSOR="$saved_cursor"
@@ -46,12 +53,10 @@ filemanager() {
 
 zle -N filemanager
 bindkey '^o' filemanager
-# ---------------------------------------------------------------------
 
 # ---------------------------- OTHER ----------------------------------
 # FZF configuration
 source <(fzf --zsh)
-export FZF_DEFAULT_OPTS="--border --bind=ctrl-k:kill-line"
 
 # Basic auto/tab complete for zsh:
 autoload -U compinit

@@ -3,6 +3,8 @@
     "CtrlO": "lua:fzf.fzf",
     "CtrlUnderscore": "lua:comment.comment",
     "Alt-p": "CommandMode",
+	"Alt-z": "command:set softwrap on",
+	"Alt-Z": "command:set softwrap off",
     "AltLeft": "WordLeft",
     "AltRight": "WordRight",
     "AltShiftLeft": "SelectWordLeft",
@@ -25,4 +27,6 @@
     "Alt-A": "SelectAll",
     "Alt-c": "Copy",
     "Alt-v": "Paste",
+    "Alt-f": "ToggleHighlightSearch",
+    "Alt-g": "Find",
 }

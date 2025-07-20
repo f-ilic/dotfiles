@@ -1,2 +1,3 @@
 os:
-  editPreset: 'micro'
+  editCommand: "env"
+  editCommandTemplate: "env TERM=xterm-256color micro {{filename}}"
