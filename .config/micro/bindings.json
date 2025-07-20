@@ -27,6 +27,7 @@
     "Alt-A": "SelectAll",
     "Alt-c": "Copy",
     "Alt-v": "Paste",
+    "Alt-x": "Cut",
     "Alt-f": "ToggleHighlightSearch",
     "Alt-g": "Find",
 }
