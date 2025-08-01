@@ -1,0 +1,79 @@
+# Restore default editing commands behind space leader
+[keys.normal.space]
+"i" = "insert_mode"
+"I" = "insert_at_line_start"
+"a" = "append_mode"
+"A" = "insert_at_line_end"
+"o" = "open_below"
+"O" = "open_above"
+"s" = "select_mode"
+"z" = "undo"
+"Z" = "redo"
+"d" = "delete_selection"
+"c" = "change_selection"
+"y" = "yank"
+"p" = "paste_after"
+"P" = "paste_before"
+
+[keys.normal]
+"i"   = "move_line_up"
+"j"   = "move_char_left"
+"k"   = "move_line_down"
+"l"   = "move_char_right"
+"u"   = "goto_line_start"
+"o"   = "goto_line_end"
+"h"   = "delete_char_backward"
+";"   = "delete_char_forward"
+"C-a" = "goto_line_start"
+"C-e" = "goto_line_end"
+"A-K" = ["extend_to_line_bounds", "delete_selection", "paste_after"]
+"A-I" = ["extend_to_line_bounds", "delete_selection", "move_line_up", "paste_before"]
+"A-f" = "move_next_word_start" # this is alt+l  
+"A-b" = "move_prev_word_start" # this is alt+j
+
+"z" = "undo"          
+"Z" = "redo"
+"A-y" = "undo"
+"A-Y" = "redo"
+
+
+[keys.select]
+"i"   = "extend_line_up"
+"j"   = "extend_char_left"
+"k"   = "extend_line_down"
+"l"   = "extend_char_right"
+"u"   = "extend_to_line_start"
+"o"   = "extend_to_line_end"
+"h"   = "delete_char_backward"
+";"   = "delete_char_forward"
+"I"   = "extend_line_up"
+"J"   = "extend_char_left"
+"K"   = "extend_line_down"
+"L"   = "extend_char_right"
+"C-a" = "goto_line_start"
+"C-e" = "goto_line_end"
+"A-K" = ["extend_to_line_bounds", "delete_selection", "paste_after"]
+"A-I" = ["extend_to_line_bounds", "delete_selection", "move_line_up", "paste_before"]
+"A-f" = "move_next_word_start" # this is alt+l  
+"A-b" = "move_prev_word_start" # this is alt+j
+
+[keys.insert]
+"C-a" = "goto_line_start"
+"C-e" = "goto_line_end"
+"A-f" = "move_next_word_start" 
+"A-b" = "move_prev_word_start" 
+"A-K" = ["extend_to_line_bounds", "delete_selection", "paste_after"]
+"A-I" = ["extend_to_line_bounds", "delete_selection", "move_line_up", "paste_before"]
+"A-y" = "undo"
+"A-Y" = "redo"
+
+# This is a snippet from
+# https://github.com/helix-editor/helix/discussions/12934#discussioncomment-12438498
+# it allows to open yazi with Ctrl+o within helix.
+C-o = [
+  ':sh rm -f /tmp/unique-file',
+  ':insert-output yazi %{buffer_name} --chooser-file=/tmp/unique-file',
+  ':insert-output echo "\x1b[?1049h\x1b[?2004h" > /dev/tty',
+  ':open %sh{cat /tmp/unique-file}',
+  ':redraw',
+]

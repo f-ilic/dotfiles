@@ -1,0 +1,17 @@
+# Language server configuration for Helix
+
+# Configure ruff language server
+[language-server.ruff]
+command = "ruff"
+args = ["server", "--preview"]
+
+# Configure pylsp language server for autocomplete
+[language-server.pylsp]
+command = "pylsp"
+config = { pylsp = { plugins = { pycodestyle = { enabled = false }, mccabe = { enabled = false }, pyflakes = { enabled = false } } } }
+
+# Configure Python language
+[[language]]
+name = "python"
+language-servers = ["pylsp", "ruff"]
+formatter = { command = "ruff", args = ["format", "--stdin-filename", "file.py", "-"] }
