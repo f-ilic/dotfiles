@@ -9,11 +9,6 @@ rev = "fbb7c00"
 hash = "1d231a808d3344546380df33daf43e91"
 
 [[plugin.deps]]
-use = "yazi-rs/plugins:no-status"
-rev = "5eea960"
-hash = "3e023d31f29201efdac2a6ae35fedb78"
-
-[[plugin.deps]]
 use = "f-ilic/simple-status"
 rev = "8e06a65"
 hash = "452bf35d07c08b6d4ab654b1b563b8da"

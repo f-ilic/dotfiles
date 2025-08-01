@@ -1,3 +1,25 @@
+# ------------ navigation with ijkl ------------
+[[mgr.prepend_keymap]]
+on = [ "i" ]
+run = "arrow -1"
+desc = "Move cursor up"
+
+[[mgr.prepend_keymap]]
+on = [ "j" ]
+run = "leave"
+desc = "Go back to parent directory"
+
+[[mgr.prepend_keymap]]
+on = [ "k" ]
+run = "arrow 1"
+desc = "Move cursor down"
+
+[[mgr.prepend_keymap]]
+on = [ "l" ]
+run = "enter"
+desc = "Enter directory or open file"
+# ------------ ------------------- ------------
+
 [[mgr.prepend_keymap]]
 on = [ "'" ]
 run = "plugin bookmarks save"

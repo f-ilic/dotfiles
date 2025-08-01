@@ -10,3 +10,6 @@ shell-integration-features = no-cursor,sudo
 
 macos-option-as-alt = true
 macos-titlebar-proxy-icon = hidden
+
+# keybind=clear
+keybind = alt+cmd+i=unbind

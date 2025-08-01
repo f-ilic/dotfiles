@@ -1,6 +1,5 @@
 {
     "autoclose": false,
     "colorscheme": "simple-highlight",
-    "hlsearch": true,
-    "softwrap": true
+    "hlsearch": true
 }
