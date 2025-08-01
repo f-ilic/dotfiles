@@ -2,12 +2,10 @@ local obj = {}
 obj.__index = obj
 
 -- Configuration
-obj.doubleTapSpeed = 0.2  -- Time window for double-tap detection (in seconds)
+-- (removed doubleTapSpeed as we're not using double-tap anymore)
 
 -- Modal state variables
 obj.modalActive = false
-obj.lastAltReleaseTime = 0
-obj.altPressed = false
 obj.modalHotkeys = {}
 obj.disabledKeys = {}
 
@@ -29,10 +27,26 @@ end
 -- Toggle modal mode
 function obj:toggleModal()
     self.modalActive = not self.modalActive
-    
+    self:updateModalState()
+end
+
+-- Set modal mode to unlocked (normal mode)
+function obj:setUnlocked()
+    self.modalActive = false
+    self:updateModalState()
+end
+
+-- Set modal mode to locked (modal mode)
+function obj:setLocked()
+    self.modalActive = true
+    self:updateModalState()
+end
+
+-- Update the modal state (show indicator and enable/disable hotkeys)
+function obj:updateModalState()
     -- Show mode indicator with colors
     if self.modalActive then
-        -- Green for modal mode
+        -- Green for modal mode (locked)
         hs.alert.show("🔒", {
             strokeColor = {white = 0},
             fillColor = {red = 0, green = 0, blue = 0, alpha = 1},
@@ -42,7 +56,7 @@ function obj:toggleModal()
             atScreenEdge = 0
         }, 1.5)
     else
-        -- Red for normal mode  
+        -- Red for normal mode (unlocked)
         hs.alert.show("🔓", {
             strokeColor = {white = 0},
             fillColor = {red = 0, green = 0, blue = 0, alpha = 1},
@@ -74,33 +88,10 @@ end
 
 -- Function to start the Spoon (bind all key remaps)
 function obj:start()
-    -- Alt double-tap detection
-    self.altWatcher = hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
-        local flags = event:getFlags()
-        local now = hs.timer.secondsSinceEpoch()
-        
-        if flags.alt and not self.altPressed then
-            -- Alt key pressed (only count first press, not repeats)
-            self.altPressed = true
-        elseif not flags.alt and self.altPressed then
-            -- Alt key released
-            self.altPressed = false
-            
-            -- Check if this is a double-tap (within configured time window)
-            if (now - self.lastAltReleaseTime) < self.doubleTapSpeed then
-                -- Double tap detected
-                self:toggleModal()
-                -- Reset timer to prevent triple-tap from triggering again
-                self.lastAltReleaseTime = 0
-            else
-                -- Single tap, record the release time
-                self.lastAltReleaseTime = now
-            end
-        end
-        
-        return false
-    end)
-    self.altWatcher:start()
+    -- Modal control keys
+    remap({'alt'}, '1', function() self:setUnlocked() end)  -- Alt+1: Always unlock (normal mode)
+    remap({'alt'}, '2', function() self:setLocked() end)    -- Alt+2: Always lock (modal mode)
+    remap({'alt'}, '0', function() self:toggleModal() end)  -- Alt+0: Toggle between modes
 
 
     -------------- NORMAL MODE --------------
@@ -204,7 +195,7 @@ function obj:start()
         table.insert(self.disabledKeys, hs.hotkey.bind({}, key, function() end, nil, nil):disable())
     end
 
-    hs.alert.show("Key Remap Spoon loaded\n\nDouble-tap Alt to toggle between modes\n   Locked: 🔒\n   Unlocked: 🔓", 5)
+    hs.alert.show("Key Remap Spoon loaded\n\nModal controls:\n   Alt+1: Unlock 🔓\n   Alt+2: Lock 🔒\n   Alt+0: Toggle", 5)
 end
 
 return obj
