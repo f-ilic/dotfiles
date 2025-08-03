@@ -2,7 +2,8 @@ font-family = Fira Code
 font-size = 14
 
 font-feature=-calt, -liga, -dlig
-theme = dark:xcodedarkhc,light:xcodelighthc
+#theme = dark:xcodedarkhc,light:xcodelighthc
+theme = dark:rose-pine-moon,light:rose-pine-dawn
 cursor-style = block
 cursor-style-blink = false
 
@@ -11,5 +12,6 @@ shell-integration-features = no-cursor,sudo
 macos-option-as-alt = true
 macos-titlebar-proxy-icon = hidden
 
-# keybind=clear
-keybind = alt+cmd+i=unbind
+# So it does not get in the way of moving lines up
+# in micro / helix
+keybind = alt+cmd+i=unbind 

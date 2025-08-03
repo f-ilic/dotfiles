@@ -1,5 +1,9 @@
 {
     "autoclose": false,
     "colorscheme": "simple-highlight",
-    "hlsearch": true
+    "hlsearch": true,
+    "softwrap": true,
+    "statusformatr": "",
+    "tabstospaces": true,
+    "xterm-256color": true
 }
