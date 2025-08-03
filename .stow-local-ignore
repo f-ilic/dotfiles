@@ -1,0 +1,6 @@
+install_scripts/*
+kmonad/*
+vscode/*
+.zshrc
+.git/*
+README.md
