@@ -18,7 +18,6 @@ end
 
 -- Function to start the Spoon (bind all key remaps)
 function obj:start()
-    -- remap({'alt'}, 'e', pressFn('escape'))
     remap({'alt'}, 'q', pressFn('escape'))
 
     remap({'alt'}, 'j', pressFn('left'))
@@ -47,8 +46,6 @@ function obj:start()
     
     remap({'alt'}, 'h', pressFn('delete'))
     remap({'alt'}, ';', pressFn('forwarddelete'))
-
-    -- remap({'alt', 'cmd'}, ';', pressFn({'cmd'}, 'delete'))
     remap({'alt'}, 'space', pressFn('return'))
 
     hs.alert.show("Key Remap Spoon loaded")
