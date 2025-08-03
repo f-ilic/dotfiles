@@ -3,6 +3,9 @@ theme = "base16_transparent"
 
 [editor]
 auto-pairs = false
+scroll-lines = 1
+color-modes = true
+popup-border = "all"
 
 # Restore default editing commands behind space leader
 [keys.normal.space]
@@ -18,6 +21,7 @@ auto-pairs = false
 "p"   = "paste_after"
 "P"   = "paste_before"
 "q"   = ":quit-all"
+"Q"   = ":quit-all!"
 "ret" = ":write"
 
 [keys.normal]
