@@ -1,5 +1,7 @@
 # FZF configuration and key bindings
-source <(fzf --zsh)
+# source <(fzf --zsh) # this was the old solution, but does not work on linux.
+# WIP: checking if the solution below produces issues.
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 
 bindkey -r '^[p' # Disable Alt+p for tmux compatibility
 
