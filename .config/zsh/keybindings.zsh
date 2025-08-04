@@ -1,7 +1,11 @@
-# FZF configuration and key bindings
-# source <(fzf --zsh) # this was the old solution, but does not work on linux.
-# WIP: checking if the solution below produces issues.
-[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+# Sourcing FZF: Platform detection and conditional sourcing
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS
+    source <(fzf --zsh)
+elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    # Linux
+    [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+fi
 
 bindkey -r '^[p' # Disable Alt+p for tmux compatibility
 
