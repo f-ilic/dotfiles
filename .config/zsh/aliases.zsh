@@ -12,7 +12,7 @@ FZF_DEFAULT_OPTS="--style=full --border --preview='fzf-preview.sh {}' --layout r
 TERM=xterm-256color command micro "$@"; 
 }
 
-tmux-scrollback-with-fzf() {
+fzf-tmux-scrollback() {
   local lines=${1:-1000}
   local capture_file="/tmp/tmux_capture_$(date +%s).log"
   local selection_file="/tmp/tmux_selection_$(date +%s).log"
