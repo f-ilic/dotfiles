@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# Default values
+SCALE="hd720"
+LAYOUT="0_0|0_h0"
+FONTSIZE="24"
+CAPTION1=""
+CAPTION2=""
+DURATION="longest"
+
+# Check if help is requested
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $0 input1 input2 output [options]"
+    echo ""
+    echo "Stack two videos vertically (top/bottom) with optional captions"
+    echo ""
+    echo "Positional arguments:"
+    echo "  input1     First video file (top)"
+    echo "  input2     Second video file (bottom)"
+    echo "  output     Output video file"
+    echo ""
+    echo "Options:"
+    echo "  --caption1 TEXT      Caption for first video"
+    echo "  --caption2 TEXT      Caption for second video"
+    echo "  --scale SCALE        Video scale (default: hd720)"
+    echo "  --layout LAYOUT      Stack layout (default: 0_0|0_h0)"
+    echo "  --fontsize SIZE      Caption font size (default: 24)"
+    echo "  --duration MODE      Duration mode: longest, shortest (default: longest)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 a.mp4 b.mov out.mp4"
+    echo "  $0 a.mp4 b.mov out.mp4 --caption1 \"Camera 1\" --caption2 \"Camera 2\""
+    echo "  $0 a.mp4 b.mov out.mp4 --caption1 \"Top\" --fontsize 32"
+    echo "  $0 a.mp4 b.mov out.mp4 --caption1 \"Top\" --caption2 \"Bottom\" --duration shortest"
+    exit 1
+fi
+
+# Check minimum required arguments
+if [[ $# -lt 3 ]]; then
+    echo "Error: Missing required arguments"
+    echo "Run '$0 --help' for usage information"
+    exit 1
+fi
+
+INPUT1="$1"
+INPUT2="$2"
+OUTPUT="$3"
+shift 3
+
+# Parse named arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --caption1)
+            CAPTION1="$2"
+            shift 2
+            ;;
+        --caption2)
+            CAPTION2="$2"
+            shift 2
+            ;;
+        --scale)
+            SCALE="$2"
+            shift 2
+            ;;
+        --layout)
+            LAYOUT="$2"
+            shift 2
+            ;;
+        --fontsize)
+            FONTSIZE="$2"
+            shift 2
+            ;;
+        --duration)
+            DURATION="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Run '$0 --help' for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Set shortest parameter based on duration mode
+if [[ "$DURATION" == "shortest" ]]; then
+    SHORTEST_PARAM="shortest=1"
+else
+    SHORTEST_PARAM="shortest=0"
+fi
+
+ffmpeg -i "$INPUT1" -i "$INPUT2" \
+	-filter_complex "[0:v] setpts=PTS-STARTPTS, scale=$SCALE:force_original_aspect_ratio=decrease, pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2${CAPTION1:+, drawtext=text='$CAPTION1':fontcolor=white:fontsize=$FONTSIZE:box=1:boxcolor=black@0.5:boxborderw=5:x=10:y=10} [a0]; [1:v] setpts=PTS-STARTPTS, scale=$SCALE:force_original_aspect_ratio=decrease, pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2${CAPTION2:+, drawtext=text='$CAPTION2':fontcolor=white:fontsize=$FONTSIZE:box=1:boxcolor=black@0.5:boxborderw=5:x=10:y=10} [a1]; [a0][a1]xstack=inputs=2:layout=$LAYOUT:$SHORTEST_PARAM[out]" \
+	-map "[out]" -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p -movflags +faststart "$OUTPUT"

@@ -1,0 +1,135 @@
+#!/bin/bash
+
+# Configuration
+REMOTE_HOST="beast"
+REMOTE_VIDEOS_PATH="/home/"
+
+# Function to display help
+show_help() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS] [REMOTE_PATH]
+
+Interactive video browser and player using fzf for remote servers.
+
+OPTIONS:
+    -h, --help              Show this help message
+    -H, --host HOSTNAME     Override the default remote host (default: $REMOTE_HOST)
+
+ARGUMENTS:
+    REMOTE_PATH            Remote path to search for videos (default: /home/)
+
+EXAMPLES:
+    $(basename "$0")                           # Search default path on default host
+    $(basename "$0") /media/videos             # Search /media/videos on default host
+    $(basename "$0") -H myserver /home/user    # Search /home/user on myserver
+    $(basename "$0") --host myserver           # Search default path on myserver
+
+SUPPORTED FORMATS:
+    - MP4, AVI, MOV, MKV
+
+CONTROLS:
+    - Use arrow keys or type to search/filter
+    - Press Enter to download and play selected video
+    - Press Ctrl+C or Escape to exit
+    - Search strings persist between selections
+
+EOF
+}
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -H|--host)
+            if [ -z "$2" ]; then
+                echo "Error: --host requires a hostname argument"
+                exit 1
+            fi
+            REMOTE_HOST="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Error: Unknown option $1"
+            echo "Use -h or --help for usage information"
+            exit 1
+            ;;
+        *)
+            # This is the remote path argument
+            REMOTE_VIDEOS_PATH="$1"
+            shift
+            ;;
+    esac
+done
+
+# --- Script starts here ---
+
+echo "Connecting to: $REMOTE_HOST"
+echo "Searching for videos in: $REMOTE_VIDEOS_PATH"
+
+echo "--- Building file index (this may take a while) ---"
+
+# --- THIS PART NOW RUNS ONLY ONCE ---
+# Use ssh to find all files and directories recursively on the remote server.
+remote_command="find \"$REMOTE_VIDEOS_PATH\" -type f \( -iname \"*.mp4\" -o -iname \"*.avi\" -o -iname \"*.mov\" -o -iname \"*.mkv\" \) -print0 2>/dev/null | tr '\0' '\n'"
+
+remote_files=$(ssh -T "$REMOTE_HOST" "$remote_command")
+
+if [ -z "$remote_files" ]; then
+    echo "No files found in the specified path. Exiting."
+    exit 1
+fi
+
+echo "File index complete. Starting interactive session."
+echo "--- Press Ctrl+C or Escape to exit the interactive session ---"
+
+# Initialize the search query
+search_query=""
+
+# Loop indefinitely to allow multiple file selections.
+# This loop is now fast because it uses the pre-indexed file list.
+while true; do
+
+    # Use fzf to provide an interactive menu for file selection, preserving search query.
+    # Use --print-query to capture the search string
+    fzf_result=$(echo "$remote_files" | fzf --ansi --print-query --query="$search_query")
+    
+    # Parse the fzf output: first line is the query, second line is the selected file
+    search_query=$(echo "$fzf_result" | head -n1)
+    selected_file=$(echo "$fzf_result" | tail -n +2)
+
+    # Check if a file was selected.
+    if [ -z "$selected_file" ]; then
+        echo "No file selected. Exiting the session."
+        break # Exit the while loop
+    fi
+
+    echo "Selected file: $selected_file"
+
+    # Generate a unique temporary filename using a timestamp and process ID.
+    TMPFILE="/tmp/remote_video_$(date +%Y%m%d%H%M%S)_$$.mp4"
+
+    # Use trap to ensure the temporary file is deleted on exit
+    trap "rm -f \"$TMPFILE\"" EXIT
+
+    echo "Downloading file to temporary location: $TMPFILE"
+
+    # Use scp to securely copy the file from the remote machine to the local temp file
+    scp "$REMOTE_HOST:$selected_file" "$TMPFILE"
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to download the file. Returning to fzf."
+        continue # Return to the start of the while loop
+    fi
+
+    echo "Transfer complete. Starting playback..."
+
+    mpv "$TMPFILE"
+
+    echo "Playback finished. Returning to fzf."
+
+done
+
+echo "Session ended."

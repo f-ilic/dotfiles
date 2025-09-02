@@ -1,0 +1,122 @@
+#!/bin/bash
+
+# Configuration
+REMOTE_HOST="beast"
+REMOTE_PATH="/home/"
+
+# Function to display help
+show_help() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS] [REMOTE_PATH]
+
+Interactive file browser and downloader using fzf for remote servers.
+
+OPTIONS:
+    -h, --help              Show this help message
+    -H, --host HOSTNAME     Override the default remote host (default: $REMOTE_HOST)
+
+ARGUMENTS:
+    REMOTE_PATH            Remote path to search for files (default: /home/)
+
+EXAMPLES:
+    $(basename "$0")                           # Search default path on default host
+    $(basename "$0") /var/log                  # Search /var/log on default host
+    $(basename "$0") -H myserver /home/user    # Search /home/user on myserver
+    $(basename "$0") --host myserver           # Search default path on myserver
+
+CONTROLS:
+    - Use TAB to select multiple files
+    - Press Enter to download selected files
+    - Press Ctrl+C or Escape to exit
+    - Search strings persist between selections
+
+EOF
+}
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -H|--host)
+            if [ -z "$2" ]; then
+                echo "Error: --host requires a hostname argument"
+                exit 1
+            fi
+            REMOTE_HOST="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Error: Unknown option $1"
+            echo "Use -h or --help for usage information"
+            exit 1
+            ;;
+        *)
+            # This is the remote path argument
+            REMOTE_PATH="$1"
+            shift
+            ;;
+    esac
+done
+
+echo "Connecting to: $REMOTE_HOST"
+echo "Searching for files in: $REMOTE_PATH"
+
+echo "--- Building file index (this may take a while) ---"
+
+# Use ssh to find all files and directories recursively on the remote server.
+# The output is piped to `tr` to convert null characters to newlines, which fzf handles.
+remote_command="find \"$REMOTE_PATH\" -print0 2>/dev/null | tr '\0' '\n'"
+remote_files=$(ssh -T "$REMOTE_HOST" "$remote_command")
+
+if [ -z "$remote_files" ]; then
+    echo "No files found in the specified path. Exiting."
+    exit 1
+fi
+
+echo "File index complete. Starting interactive session."
+echo "--- Use TAB to select multiple files, then press Enter to download ---"
+echo "--- Press Ctrl+C or Escape to exit the interactive session ---"
+
+# Initialize the search query
+search_query=""
+
+# Loop indefinitely to allow multiple file selections.
+while true; do
+
+    # Pipe the file list to fzf, enabling multi-select mode and preserving search query.
+    # Use --print-query to capture the search string and --expect=ctrl-c to handle exit gracefully
+    fzf_result=$(echo "$remote_files" | fzf --multi --ansi --print-query --query="$search_query")
+    
+    # Parse the fzf output: first line is the query, rest are selected files
+    search_query=$(echo "$fzf_result" | head -n1)
+    selected_files=$(echo "$fzf_result" | tail -n +2)
+
+    # Check if any files were selected
+    if [ -z "$selected_files" ]; then
+        echo "No files selected. Exiting the session."
+        break # Exit the while loop
+    fi
+
+    echo "Selected files to download:"
+    echo "$selected_files"
+    echo "---"
+
+    # Loop through each selected file and download it using scp
+    while IFS= read -r file; do
+        echo "Downloading '$file'..." 
+        # Use scp with the -r flag to handle both files and directories
+        scp -r "$REMOTE_HOST:$file" .
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to download '$file'. Continuing with the next file."
+        fi
+        echo "---------------------------------------------------"
+    done <<< "$selected_files"
+
+    echo "Download process complete. Returning to fzf."
+
+done
+
+echo "Session ended."

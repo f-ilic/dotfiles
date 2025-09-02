@@ -1,0 +1,10 @@
+#!/bin/zsh
+
+# Generate uuid, take first 8 chars, and make lowercase
+uuid=$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)
+
+# Get today's date in YYYY-MM-DD
+date_str=$(date +%F)
+
+# Output
+echo "${date_str}-${uuid}"
