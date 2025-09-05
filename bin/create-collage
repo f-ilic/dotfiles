@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# ============================
+# Default Configuration
+# ============================
+IMAGES_PER_ROW=4
+BORDER_SIZE=5
+OUTPUT_FILE="photo_collage.jpg"
+
+# ============================
+# Function to display usage
+# ============================
+usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Creates a photo collage from images in the current directory."
+    echo ""
+    echo "Options:"
+    echo "  -r, --rows <num>    Number of images per row in the collage (default: ${IMAGES_PER_ROW})"
+    echo "  -b, --border <num>  Width of the black border between images in pixels (default: ${BORDER_SIZE})"
+    echo "  -o, --output <file> Name of the output collage file (default: ${OUTPUT_FILE})"
+    echo "  -h, --help          Show this help message"
+    exit 1
+}
+
+# ============================
+# Parse named parameters
+# ============================
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -r|--rows) IMAGES_PER_ROW="$2"; shift ;;
+        -b|--border) BORDER_SIZE="$2"; shift ;;
+        -o|--output) OUTPUT_FILE="$2"; shift ;;
+        -h|--help) usage ;;
+        *) echo "Unknown parameter: $1"; usage ;;
+    esac
+    shift
+done
+
+# ============================
+# Main Script Logic
+# ============================
+
+# Check if the montage command exists
+if ! command -v montage &> /dev/null
+then
+    echo "Error: The 'montage' command (part of ImageMagick) could not be found."
+    echo "Please install ImageMagick and try again."
+    exit 1
+fi
+
+# Find all common image file types, sort them, and store in a variable
+# The `sort -V` command ensures the filenames are sorted correctly (e.g., 2 before 10)
+IMAGE_FILES=$(find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" \) | sort -V)
+
+# Check if any image files were found
+if [ -z "$IMAGE_FILES" ]; then
+    echo "No image files found in the current directory."
+    exit 1
+fi
+
+echo "Creating collage with the following settings:"
+echo "  - Images per row: ${IMAGES_PER_ROW}"
+echo "  - Border size: ${BORDER_SIZE}px"
+echo "  - Output file: ${OUTPUT_FILE}"
+
+montage -tile "${IMAGES_PER_ROW}x" -geometry "+${BORDER_SIZE}+${BORDER_SIZE}" -bordercolor "black" ${IMAGE_FILES} "${OUTPUT_FILE}"
+
+if [ $? -eq 0 ]; then
+    echo "Collage successfully created: ${OUTPUT_FILE}"
+else
+    echo "Error: Collage creation failed. Please check your image files or settings."
+fi
