@@ -2,8 +2,8 @@ font-family = Fira Code
 font-size = 14
 
 font-feature=-calt, -liga, -dlig
-#theme = dark:xcodedarkhc,light:xcodelighthc
-theme = dark:rose-pine-moon,light:rose-pine-dawn
+theme = dark:xcodedarkhc,light:xcodedarkhc
+#theme = dark:rose-pine-moon,light:rose-pine-moon
 cursor-style = block
 cursor-style-blink = false
 
@@ -15,3 +15,5 @@ macos-titlebar-proxy-icon = hidden
 # So it does not get in the way of moving lines up
 # in micro / helix
 keybind = alt+cmd+i=unbind 
+
+term=xterm-ghostty

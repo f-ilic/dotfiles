@@ -5,7 +5,7 @@
 # ============================
 IMAGES_PER_ROW=4
 BORDER_SIZE=5
-OUTPUT_FILE="photo_collage.jpg"
+OUTPUT_FILE="output.jpg"
 
 # ============================
 # Function to display usage

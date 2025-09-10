@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+lines=${1:-1000}
+capture_file="/tmp/tmux_capture_$(date +%s).log"
+selection_file="/tmp/tmux_selection_$(date +%s).log"
+
+# Capture tmux scrollback
+tmux capture-pane -S -$lines -p > "$capture_file"
+
+# Let user select multiple lines with fzf
+cat "$capture_file" | fzf -m --height=80% > "$selection_file"
+
+# If there was a selection, open it
+if [ -s "$selection_file" ]; then
+  eval "$EDITOR \"$selection_file\""
+fi

@@ -1,0 +1,2 @@
+#!/bin/bash
+osascript -e "tell application \"Finder\" to set the clipboard to (POSIX file \"$(pwd)/$1\")"

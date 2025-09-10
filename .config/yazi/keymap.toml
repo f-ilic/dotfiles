@@ -18,6 +18,10 @@ desc = "Move cursor down"
 on = [ "l" ]
 run = "enter"
 desc = "Enter directory or open file"
+
+[[mgr.prepend_keymap]]
+on = "y"
+run = [ "yank", "plugin clippy" ]
 # ------------ ------------------- ------------
 
 [[mgr.prepend_keymap]]
