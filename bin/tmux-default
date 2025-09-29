@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SESSION_NAME="${1:-}"
+if [[ -z "$SESSION_NAME" ]]; then
+  echo "Usage: $0 <session-name>"
+  exit 1
+fi
+
+# If the session already exists, just attach to it.
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  echo "Session '$SESSION_NAME' already exists. Attaching..."
+  exec tmux attach -t "$SESSION_NAME"
+fi
+
+# Create the session detached with the first window named 'main'
+tmux new-session -d -s "$SESSION_NAME" -n main
+
+# ----- files window (split left/right) -----
+tmux new-window -t "$SESSION_NAME:" -n files
+tmux select-window -t "$SESSION_NAME:files"
+tmux split-window -h    # left/right split
+
+# ----- monitor window (3 panes: left | top-right / bottom-right) -----
+tmux new-window -t "$SESSION_NAME:" -n monitor
+tmux select-window -t "$SESSION_NAME:monitor"
+tmux split-window -h    # create left | right
+tmux select-pane -R     # focus the right pane
+tmux split-window -v    # split right into top/bottom
+
+# ----- git window (no splits) -----
+tmux new-window -t "$SESSION_NAME:" -n git
+
+# Return focus to 'main' when attaching
+tmux select-window -t "$SESSION_NAME:main"
+
+# Attach to the new session
+exec tmux attach -t "$SESSION_NAME"
