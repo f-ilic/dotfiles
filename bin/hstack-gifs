@@ -1,0 +1,119 @@
+#!/bin/bash
+
+# Default values
+SCALE="-1:300"
+FONTSIZE="24"
+CAPTION1=""
+CAPTION2=""
+DURATION="longest"
+
+# Check if help is requested
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $0 input1 input2 output [options]"
+    echo ""
+    echo "Stack two GIFs horizontally (side by side) with optional captions"
+    echo ""
+    echo "Positional arguments:"
+    echo "  input1     First GIF file (left)"
+    echo "  input2     Second GIF file (right)"
+    echo "  output     Output GIF file"
+    echo ""
+    echo "Options:"
+    echo "  --caption1 TEXT      Caption for first GIF"
+    echo "  --caption2 TEXT      Caption for second GIF"
+    echo "  --scale SCALE        GIF scale (default: -1:300, maintains aspect ratio at 300px height)"
+    echo "  --fontsize SIZE      Caption font size (default: 24)"
+    echo "  --duration MODE      Duration mode: longest, shortest (default: longest)"
+    echo ""
+    echo "Scale examples:"
+    echo "  -1:300     Scale to 300px height, maintain aspect ratio"
+    echo "  400:-1     Scale to 400px width, maintain aspect ratio"
+    echo "  400:300    Scale to exact 400x300 (may distort)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 a.gif b.gif out.gif"
+    echo "  $0 a.gif b.gif out.gif --caption1 \"Left\" --caption2 \"Right\""
+    echo "  $0 a.gif b.gif out.gif --scale \"-1:400\" --fontsize 32"
+    echo "  $0 a.gif b.gif out.gif --duration shortest"
+    exit 1
+fi
+
+# Check minimum required arguments
+if [[ $# -lt 3 ]]; then
+    echo "Error: Missing required arguments"
+    echo "Run '$0 --help' for usage information"
+    exit 1
+fi
+
+INPUT1="$1"
+INPUT2="$2"
+OUTPUT="$3"
+shift 3
+
+# Parse named arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --caption1)
+            CAPTION1="$2"
+            shift 2
+            ;;
+        --caption2)
+            CAPTION2="$2"
+            shift 2
+            ;;
+        --scale)
+            SCALE="$2"
+            shift 2
+            ;;
+        --fontsize)
+            FONTSIZE="$2"
+            shift 2
+            ;;
+        --duration)
+            DURATION="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Run '$0 --help' for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Build the filter complex string
+FILTER_COMPLEX=""
+
+# Scale and optionally add captions to first GIF
+FILTER_COMPLEX+="[0]scale=$SCALE"
+if [[ -n "$CAPTION1" ]]; then
+    FILTER_COMPLEX+=", drawtext=text='$CAPTION1':fontcolor=white:fontsize=$FONTSIZE:box=1:boxcolor=black@0.5:boxborderw=5:x=10:y=10"
+fi
+FILTER_COMPLEX+="[a];"
+
+# Scale and optionally add captions to second GIF
+FILTER_COMPLEX+="[1]scale=$SCALE"
+if [[ -n "$CAPTION2" ]]; then
+    FILTER_COMPLEX+=", drawtext=text='$CAPTION2':fontcolor=white:fontsize=$FONTSIZE:box=1:boxcolor=black@0.5:boxborderw=5:x=10:y=10"
+fi
+FILTER_COMPLEX+="[b];"
+
+# Stack horizontally
+if [[ "$DURATION" == "shortest" ]]; then
+    FILTER_COMPLEX+="[a][b]hstack=shortest=1"
+else
+    FILTER_COMPLEX+="[a][b]hstack"
+fi
+
+echo "Stacking GIFs horizontally..."
+echo "Input 1: $INPUT1"
+echo "Input 2: $INPUT2"
+echo "Output: $OUTPUT"
+echo "Scale: $SCALE"
+echo "Duration mode: $DURATION"
+
+ffmpeg -i "$INPUT1" -i "$INPUT2" \
+    -filter_complex "$FILTER_COMPLEX" \
+    -y "$OUTPUT"
+
+echo "Done! Output saved to: $OUTPUT"
