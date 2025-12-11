@@ -35,7 +35,6 @@ brew install yazi
 brew install micro
 brew install zsh-syntax-highlighting
 brew install lazygit
-brew install neilberkman/clippy/clippy
 
 echo "🛠️ Installing additional tools..."
 brew install --cask ghostty
@@ -43,9 +42,14 @@ brew install --cask hammerspoon
 brew install --cask rectangle
 brew install --cask alt-tab
 
-# Install Fira Code font
+# Install fonts
 echo "🔤 Installing Fira Code font..."
 brew install --cask font-fira-code
+
+# Install nice-to-have's
+echo "👌 Installing Nice-To-Have's"
+brew install tldr
+brew install neilberkman/clippy/clippy
 
 # Create ~/bin directory if it doesn't exist
 if [[ ! -d "$HOME/bin" ]]; then
@@ -56,20 +60,6 @@ fi
 
 echo "✅ Installation complete!"
 echo ""
-echo "📋 Installed packages:"
-echo "  - fzf (fuzzy finder)"
-echo "  - yazi (file manager)"
-echo "  - micro (text editor)"
-echo "  - zsh-syntax-highlighting"
-echo "  - lazygit (git text interface)"
-echo "  - ghostty (terminal)"
-echo "  - hammerspoon (automation)"
-echo "  - rectangle (window manager)"
-echo "  - alt-tab (app switcher)"
-echo "  - Fira Code font"
-echo ""
 echo "🔄 Next steps:"
 echo "  1. Restart your terminal or run: source ~/.zshrc"
-echo "  2. Your .zshrc dotfile should now work correctly!"
-echo ""
-echo "💡 Note: Make sure to link/copy your dotfiles to the correct locations."
+echo "  2. Link all the dotfiles or run: source ~/.zshrc"
