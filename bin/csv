@@ -1,20 +1,70 @@
 #!/usr/bin/env bash
 set -o errexit
 
+# Default delimiter is a comma
+DELIMITER=,
+
 function show_usage {
   cat <<EOF
-Usage: $0 [--help] [filename]
+Usage: $0 [--help] [-d DELIMITER] filename
 
-View a CSV file at the command line.
+View a delimited file at the command line.
 
-  --help        Show this help text.
-  filename      CSV file to be viewed
+  --help            Show this help text.
+  -d, --delimiter   Specify the field separator (e.g., ',' or '\t').
+                    Defaults to comma (,).
+  filename          File to be viewed.
 EOF
-  exit -1
+  exit 0 # Exit successfully after showing help
 }
 
-if [ "$1" == "--help" -o "$1" == "" ]; then
+# --- Argument Parsing ---
+# Use getopts/getopt for robust argument parsing, but for a simple case,
+# a while loop with shift is often easier in pure bash.
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help)
+      show_usage
+      ;;
+    -d|--delimiter)
+      if [ -n "$2" ]; then
+        DELIMITER="$2"
+        shift 2 # Consume the option and its argument
+      else
+        echo "Error: Option $1 requires an argument." >&2
+        exit 1
+      fi
+      ;;
+    -*)
+      echo "Error: Unknown option $1" >&2
+      exit 1
+      ;;
+    *)
+      # The first non-option argument is the filename
+      if [ -z "$FILENAME" ]; then
+        FILENAME="$1"
+        shift 1 # Consume the filename
+      else
+        # Handle extra positional arguments
+        echo "Error: Too many positional arguments." >&2
+        show_usage
+      fi
+      ;;
+  esac
+done
+
+# --- Validation ---
+if [ -z "$FILENAME" ]; then
+  echo "Error: Filename not specified." >&2
   show_usage
 fi
 
-cat "$1" | column -s, -t | less -#2 -N -S
+if [ ! -f "$FILENAME" ]; then
+  echo "Error: File not found: $FILENAME" >&2
+  exit 1
+fi
+
+# --- Execution ---
+# The -s option to column now uses the variable DELIMITER
+cat "$FILENAME" | column -s"$DELIMITER" -t | less -#2 -N -S
