@@ -2,7 +2,8 @@ font-family = Fira Code
 font-size = 14
 
 font-feature=-calt, -liga, -dlig
-theme = dark:xcodedarkhc,light:xcodedarkhc
+theme = Xcode Dark hc
+#theme = dark:Xcode Dark hc,light:Xcode Light hc
 #theme = dark:rose-pine-moon,light:rose-pine-moon
 cursor-style = block
 cursor-style-blink = false
