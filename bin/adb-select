@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# Get list of connected devices (skip header line)
+devices=$(adb devices | tail -n +2 | grep -v '^$')
+
+if [ -z "$devices" ]; then
+    echo "No devices connected"
+    return 1 2>/dev/null || exit 1
+fi
+
+# Extract unique base IDs (remove _app/_cv suffix)
+base_ids=$(echo "$devices" | awk '{print $1}' | sed 's/_app$//;s/_cv$//' | sort -u)
+
+# Build display list with availability indicators
+display_list=""
+while IFS= read -r base_id; do
+    has_app=""
+    has_cv=""
+    
+    if echo "$devices" | grep -q "^${base_id}_app"; then
+        has_app="app"
+    fi
+    if echo "$devices" | grep -q "^${base_id}_cv"; then
+        has_cv="cv"
+    fi
+    
+    # Build indicator string
+    if [ -n "$has_app" ] && [ -n "$has_cv" ]; then
+        indicator="[app, cv]"
+    elif [ -n "$has_app" ]; then
+        indicator="[app]"
+    elif [ -n "$has_cv" ]; then
+        indicator="[cv]"
+    fi
+    
+    display_list+="${base_id} ${indicator}"$'\n'
+done <<< "$base_ids"
+
+# Remove trailing newline
+display_list=$(echo "$display_list" | sed '/^$/d')
+
+# Count unique devices
+id_count=$(echo "$base_ids" | wc -l | tr -d ' ')
+
+if [ "$id_count" -eq 1 ]; then
+    selected=$(echo "$display_list")
+else
+    # Multiple devices, use fzf to select
+    selected=$(echo "$display_list" | fzf --height=12 --prompt="Select device: " \
+        --header=$'\e[2m> sets APP_SOC, CV_SOC, ANDROID_SERIAL\e[0m')
+fi
+
+if [ -z "$selected" ]; then
+    echo "No device selected"
+    return 1 2>/dev/null || exit 1
+fi
+
+# Extract base_id from selection (first field)
+base_id=$(echo "$selected" | awk '{print $1}')
+
+# Construct both serial numbers
+app_serial="${base_id}_app"
+cv_serial="${base_id}_cv"
+
+# Verify both exist
+if ! echo "$devices" | grep -q "^${app_serial}"; then
+    echo "Error: ${app_serial} not connected"
+    return 1 2>/dev/null || exit 1
+fi
+
+if ! echo "$devices" | grep -q "^${cv_serial}"; then
+    echo "Error: ${cv_serial} not connected"
+    return 1 2>/dev/null || exit 1
+fi
+
+export APP_SOC=$app_serial
+export CV_SOC=$cv_serial
+export ANDROID_SERIAL=$app_serial
+
+echo "APP_SOC=$APP_SOC"
+echo "CV_SOC=$CV_SOC"
+echo "ANDROID_SERIAL=$ANDROID_SERIAL"
