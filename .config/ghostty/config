@@ -10,6 +10,7 @@ cursor-style-blink = false
 
 shell-integration-features = no-cursor,sudo
 
+macos-titlebar-style = tabs
 macos-option-as-alt = true
 macos-titlebar-proxy-icon = hidden
 
