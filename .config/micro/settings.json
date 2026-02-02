@@ -1,8 +1,8 @@
 {
     "autoclose": false,
+    "clipboard": "terminal",
     "colorscheme": "simple-highlight",
     "hlsearch": true,
-    "softwrap": true,
     "statusformatr": "",
     "tabstospaces": true,
     "xterm-256color": true
