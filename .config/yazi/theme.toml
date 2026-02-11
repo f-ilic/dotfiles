@@ -15,3 +15,7 @@ active = { fg = "black", bg = "cyan", bold=true}
 inactive = { fg = "gray", bg = "black"}
 sep_outer = { open = "", close = "" }
 sep_inner = { open = "", close = "" }
+
+
+[indicator]
+padding = { open= "█", close= "█" }
