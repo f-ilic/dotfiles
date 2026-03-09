@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Default values
+DIRECTION="h"
 SCALE="hd720"
-LAYOUT="0_0|0_h0"
+LAYOUT=""
 FONTSIZE="24"
 CAPTION1=""
 CAPTION2=""
@@ -12,26 +13,28 @@ DURATION="longest"
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
     echo "Usage: $0 input1 input2 output [options]"
     echo ""
-    echo "Stack two videos vertically (top/bottom) with optional captions"
+    echo "Stack two videos horizontally or vertically with optional captions"
     echo ""
     echo "Positional arguments:"
-    echo "  input1     First video file (top)"
-    echo "  input2     Second video file (bottom)"
+    echo "  input1     First video file"
+    echo "  input2     Second video file"
     echo "  output     Output video file"
     echo ""
     echo "Options:"
+    echo "  --direction h|v      Stack direction: h=horizontal, v=vertical (default: h)"
     echo "  --caption1 TEXT      Caption for first video"
     echo "  --caption2 TEXT      Caption for second video"
     echo "  --scale SCALE        Video scale (default: hd720)"
-    echo "  --layout LAYOUT      Stack layout (default: 0_0|0_h0)"
+    echo "  --layout LAYOUT      Stack layout (default: 0_0|w0_0 for h, 0_0|0_h0 for v)"
     echo "  --fontsize SIZE      Caption font size (default: 24)"
     echo "  --duration MODE      Duration mode: longest, shortest (default: longest)"
     echo ""
     echo "Examples:"
     echo "  $0 a.mp4 b.mov out.mp4"
+    echo "  $0 a.mp4 b.mov out.mp4 --direction v"
     echo "  $0 a.mp4 b.mov out.mp4 --caption1 \"Camera 1\" --caption2 \"Camera 2\""
-    echo "  $0 a.mp4 b.mov out.mp4 --caption1 \"Top\" --fontsize 32"
-    echo "  $0 a.mp4 b.mov out.mp4 --caption1 \"Top\" --caption2 \"Bottom\" --duration shortest"
+    echo "  $0 a.mp4 b.mov out.mp4 --caption1 \"Left\" --fontsize 32"
+    echo "  $0 a.mp4 b.mov out.mp4 --duration shortest"
     exit 1
 fi
 
@@ -50,6 +53,10 @@ shift 3
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --direction)
+            DIRECTION="$2"
+            shift 2
+            ;;
         --caption1)
             CAPTION1="$2"
             shift 2
@@ -81,6 +88,20 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$DIRECTION" != "h" && "$DIRECTION" != "v" ]]; then
+    echo "Error: --direction must be 'h' or 'v'"
+    exit 1
+fi
+
+# Set default layout based on direction if not explicitly provided
+if [[ -z "$LAYOUT" ]]; then
+    if [[ "$DIRECTION" == "h" ]]; then
+        LAYOUT="0_0|w0_0"
+    else
+        LAYOUT="0_0|0_h0"
+    fi
+fi
 
 # Set shortest parameter based on duration mode
 if [[ "$DURATION" == "shortest" ]]; then

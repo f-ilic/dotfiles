@@ -1,0 +1,11 @@
+{
+    "\UF729"  = "moveToBeginningOfLine:";
+    "\UF72B"  = "moveToEndOfLine:";
+    "$\UF729" = "moveToBeginningOfLineAndModifySelection:";
+    "$\UF72B" = "moveToEndOfLineAndModifySelection:";
+
+    "\UF72C"  = "movePageUp:";
+    "\UF72D"  = "movePageDown:";
+    "$\UF72C" = "movePageUpAndModifySelection:";
+    "$\UF72D" = "movePageDownAndModifySelection:";
+}

@@ -1,0 +1,192 @@
+#!/bin/bash
+
+# ============================
+# Default Configuration
+# ============================
+COLS=4
+SCALE=200
+OUTPUT="grid.gif"
+FPS=15
+LABELS=true
+RECURSIVE=false
+
+# ============================
+# Function to display usage
+# ============================
+usage() {
+    echo "Usage: $0 [OPTIONS] <gif_file|directory> [...]"
+    echo ""
+    echo "Create a grid of GIFs with optional labels."
+    echo ""
+    echo "Arguments:"
+    echo "  gif_file    GIF files to include in the grid"
+    echo "  directory   With -r, search for GIFs in directories"
+    echo ""
+    echo "Options:"
+    echo "  -r, --recursive      Find all .gif files in given directories"
+    echo "  -c, --cols NUM       Number of columns in grid (default: $COLS)"
+    echo "  -s, --scale NUM      Height of each GIF in pixels (default: $SCALE)"
+    echo "  -o, --output FILE    Output file path (default: $OUTPUT)"
+    echo "  -f, --fps NUM        Output FPS (default: $FPS)"
+    echo "  --no-labels          Disable filename labels"
+    echo "  -h, --help           Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0 *.gif -o summary.gif"
+    echo "  $0 -r . -o summary.gif"
+    echo "  $0 -r sitting/ walking/ -o activities.gif"
+    echo "  $0 -c 3 --scale 150 sitting/*.gif walking/*.gif"
+    exit 1
+}
+
+# ============================
+# Parse arguments
+# ============================
+PATHS=()
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -r|--recursive) RECURSIVE=true ;;
+        -c|--cols) COLS="$2"; shift ;;
+        -s|--scale) SCALE="$2"; shift ;;
+        -o|--output) OUTPUT="$2"; shift ;;
+        -f|--fps) FPS="$2"; shift ;;
+        --no-labels) LABELS=false ;;
+        -h|--help) usage ;;
+        -*) echo "Unknown option: $1"; usage ;;
+        *) PATHS+=("$1") ;;
+    esac
+    shift
+done
+
+if [[ ${#PATHS[@]} -eq 0 ]]; then
+    echo "Error: No GIF files or directories provided"
+    usage
+fi
+
+# Gather GIFs
+GIFS=()
+if [[ "$RECURSIVE" == true ]]; then
+    for path in "${PATHS[@]}"; do
+        while IFS= read -r gif; do
+            GIFS+=("$gif")
+        done < <(find "$path" -name "*.gif" -type f 2>/dev/null | sort -V)
+    done
+else
+    GIFS=("${PATHS[@]}")
+fi
+
+if [[ ${#GIFS[@]} -eq 0 ]]; then
+    echo "Error: No GIF files found"
+    exit 1
+fi
+
+# Sort GIFs naturally
+IFS=$'\n' GIFS=($(sort -V <<<"${GIFS[*]}")); unset IFS
+
+# Check if output exists
+if [[ -f "$OUTPUT" ]]; then
+    read -p "Output file '$OUTPUT' exists. Overwrite? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+    rm -f "$OUTPUT"
+fi
+
+echo "Creating grid from ${#GIFS[@]} GIFs"
+echo "  Columns: $COLS"
+echo "  Scale: ${SCALE}px height"
+echo "  Output: $OUTPUT"
+echo ""
+
+# Calculate rows needed
+NUM_GIFS=${#GIFS[@]}
+ROWS=$(( (NUM_GIFS + COLS - 1) / COLS ))
+
+# Build ffmpeg filter
+FILTER=""
+INPUTS=""
+
+# Input streams
+for i in "${!GIFS[@]}"; do
+    INPUTS+=" -i \"${GIFS[$i]}\""
+done
+
+# Calculate cell width based on typical 4:3 aspect ratio (spectacles camera)
+CELL_WIDTH=$((SCALE * 4 / 3))
+
+# Scale and optionally label each GIF (keep aspect ratio, match heights)
+for i in "${!GIFS[@]}"; do
+    label=$(basename "${GIFS[$i]}" .gif)
+    FILTER+="[$i:v]fps=$FPS,scale=-1:${SCALE},setsar=1"
+    if [[ "$LABELS" == true ]]; then
+        # Escape special chars in label
+        label=$(echo "$label" | sed "s/'/\\\\'/g; s/:/\\\\:/g")
+        FILTER+=",drawtext=text='$label':fontcolor=white:fontsize=14:box=1:boxcolor=black@0.6:boxborderw=3:x=5:y=5"
+    fi
+    FILTER+="[v$i];"
+done
+
+# Pad GIFs array to fill last row if needed
+TOTAL_CELLS=$((ROWS * COLS))
+PADDING=$((TOTAL_CELLS - NUM_GIFS))
+
+# Create separate black placeholder for each empty cell
+black_idx=0
+for ((idx=NUM_GIFS; idx<TOTAL_CELLS; idx++)); do
+    FILTER+="color=black:s=${CELL_WIDTH}x${SCALE}:d=1,fps=$FPS[black${black_idx}];"
+    ((black_idx++))
+done
+
+# Build grid row by row
+for ((row=0; row<ROWS; row++)); do
+    ROW_FILTER=""
+    black_idx=0
+    for ((col=0; col<COLS; col++)); do
+        idx=$((row * COLS + col))
+        if [[ $idx -lt $NUM_GIFS ]]; then
+            ROW_FILTER+="[v$idx]"
+        else
+            padding_idx=$((idx - NUM_GIFS))
+            ROW_FILTER+="[black${padding_idx}]"
+        fi
+    done
+    ROW_FILTER+="hstack=inputs=$COLS[row$row];"
+    FILTER+="$ROW_FILTER"
+done
+
+# Stack rows vertically
+VSTACK_INPUTS=""
+for ((row=0; row<ROWS; row++)); do
+    VSTACK_INPUTS+="[row$row]"
+done
+FILTER+="${VSTACK_INPUTS}vstack=inputs=$ROWS[out]"
+
+# Create temp video with ffmpeg, then compress with gifski
+TMPVID=$(mktemp).mp4
+
+echo "Creating grid..."
+CMD="ffmpeg $INPUTS -filter_complex \"$FILTER\" -map \"[out]\" -c:v libx264 -pix_fmt yuv420p -y \"$TMPVID\""
+eval $CMD 2>/dev/null
+
+if [[ $? -ne 0 ]]; then
+    rm -f "$TMPVID"
+    echo "Error: Failed to create grid"
+    exit 1
+fi
+
+echo "Compressing with gifski..."
+gifski --fps "$FPS" --quality 60 -o "$OUTPUT" "$TMPVID" 2>/dev/null
+
+result=$?
+rm -f "$TMPVID"
+
+if [[ $result -eq 0 ]]; then
+    size=$(du -h "$OUTPUT" | cut -f1)
+    echo ""
+    echo "Done! Created: $OUTPUT ($size)"
+else
+    echo ""
+    echo "Error: Failed to compress GIF"
+    exit 1
+fi

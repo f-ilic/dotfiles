@@ -1,0 +1,192 @@
+#!/Users/filic/miniconda3/envs/ml/bin/python
+"""Textual TUI for grid-gifs — create an animated GIF grid with optional labels."""
+
+import os
+import shlex
+import subprocess
+
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Footer,
+    Header,
+    Input,
+    Label,
+    RichLog,
+    Static,
+)
+from textual import on, work
+
+BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grid-gifs")
+
+
+class GridGifsApp(App):
+    TITLE = "grid-gifs"
+    SUB_TITLE = "Animated GIF grid"
+
+    theme = "nord"
+
+    BINDINGS = [
+        Binding("ctrl+r", "run_command", "Run"),
+        Binding("ctrl+l", "clear_log", "Clear log"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("escape", "quit", "Quit", show=False),
+    ]
+
+    CSS = """
+    Screen { layout: vertical; }
+
+    #form { padding: 1 2; height: auto; }
+
+    .section-title { text-style: bold; color: $accent; height: 1; margin: 1 0 0 0; }
+
+    .field-row { height: 1; margin: 0 0 1 0; }
+
+    .field-label { width: 12; height: 1; padding: 0; text-style: bold; color: $text-muted; }
+
+    Input { border: none; height: 1; padding: 0 1; width: 1fr; }
+
+    #options-row { height: 1; margin: 0 0 1 0; }
+    #options-row .field-label { width: 10; }
+    #options-row Input { width: 12; margin-right: 1; }
+
+    Checkbox { height: 1; margin: 0; padding: 0; }
+    #toggles-row { height: 1; margin: 0 0 1 0; }
+    #toggles-row Checkbox { margin-right: 3; }
+
+    #command-preview { margin: 1 0; padding: 0 1; background: $surface; height: auto; color: $text-muted; }
+
+    #btn-row { height: auto; margin: 1 2; }
+    .action-btn { width: 1fr; min-width: 10; height: 1; border: none; margin: 0 1 0 0; }
+
+    #output { margin: 0 2 1 2; height: 1fr; border: tall $accent; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+
+        with Vertical(id="form"):
+            yield Static("── Input ──", classes="section-title")
+            with Horizontal(classes="field-row"):
+                yield Label("GIF paths:", classes="field-label")
+                yield Input(placeholder="*.gif  or  dir1/ dir2/", id="paths")
+
+            yield Static("── Options ──", classes="section-title")
+            with Horizontal(id="options-row"):
+                yield Label("Columns:", classes="field-label")
+                yield Input(value="4", id="cols")
+                yield Label("Scale px:", classes="field-label")
+                yield Input(value="200", id="scale")
+                yield Label("FPS:", classes="field-label")
+                yield Input(value="15", id="fps")
+
+            with Horizontal(classes="field-row"):
+                yield Label("Output:", classes="field-label")
+                yield Input(value="grid.gif", id="output-path")
+
+            with Horizontal(id="toggles-row"):
+                yield Checkbox("Recursive (-r)", value=False, id="recursive")
+                yield Checkbox("Show labels", value=True, id="labels")
+
+            yield Static("", id="command-preview")
+
+        with Horizontal(id="btn-row"):
+            yield Button("▶  Run", id="run-btn", variant="primary", classes="action-btn")
+            yield Button("Clear Log", id="clear-btn", variant="default", classes="action-btn")
+
+        yield RichLog(id="output", highlight=True, markup=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._update_preview()
+
+    @on(Input.Changed)
+    @on(Checkbox.Changed)
+    def _update_preview(self, event=None) -> None:
+        cmd = self._build_command()
+        preview = self.query_one("#command-preview", Static)
+        if cmd:
+            preview.update(f"[bold]$[/bold] {shlex.join(cmd)}")
+        else:
+            preview.update("[dim italic]enter GIF paths to see command preview[/]")
+
+    def _build_command(self) -> list[str] | None:
+        paths = self.query_one("#paths", Input).value.strip()
+        if not paths:
+            return None
+
+        cmd = [BIN]
+
+        recursive = self.query_one("#recursive", Checkbox).value
+        labels = self.query_one("#labels", Checkbox).value
+        cols = self.query_one("#cols", Input).value.strip()
+        scale = self.query_one("#scale", Input).value.strip()
+        fps = self.query_one("#fps", Input).value.strip()
+        output = self.query_one("#output-path", Input).value.strip()
+
+        if recursive:
+            cmd.append("--recursive")
+        if cols and cols != "4":
+            cmd += ["--cols", cols]
+        if scale and scale != "200":
+            cmd += ["--scale", scale]
+        if fps and fps != "15":
+            cmd += ["--fps", fps]
+        if output and output != "grid.gif":
+            cmd += ["--output", output]
+        if not labels:
+            cmd.append("--no-labels")
+
+        cmd += paths.split()
+        return cmd
+
+    def action_run_command(self) -> None:
+        self._run()
+
+    def action_clear_log(self) -> None:
+        self.query_one("#output", RichLog).clear()
+
+    @on(Button.Pressed, "#run-btn")
+    def _on_run_pressed(self) -> None:
+        self._run()
+
+    @on(Button.Pressed, "#clear-btn")
+    def _on_clear_pressed(self) -> None:
+        self.query_one("#output", RichLog).clear()
+
+    @work(thread=True)
+    def _run(self) -> None:
+        cmd = self._build_command()
+        log = self.query_one("#output", RichLog)
+        btn = self.query_one("#run-btn", Button)
+
+        if not cmd:
+            self.call_from_thread(log.write, "[bold red]Error:[/] enter GIF paths first.")
+            return
+
+        self.call_from_thread(setattr, btn, "disabled", True)
+        self.call_from_thread(log.write, f"[bold green]▶ Running:[/] {shlex.join(cmd)}")
+        self.call_from_thread(log.write, "")
+
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                self.call_from_thread(log.write, line.rstrip())
+            proc.wait()
+            if proc.returncode == 0:
+                self.call_from_thread(log.write, "\n[bold green]✓ Done![/]")
+            else:
+                self.call_from_thread(log.write, f"\n[bold red]✗ Failed with exit code {proc.returncode}[/]")
+        except FileNotFoundError:
+            self.call_from_thread(log.write, f"[bold red]Error:[/] {BIN} not found")
+        except Exception as e:
+            self.call_from_thread(log.write, f"[bold red]Error:[/] {e}")
+        finally:
+            self.call_from_thread(setattr, btn, "disabled", False)
+
+
+if __name__ == "__main__":
+    GridGifsApp().run()
