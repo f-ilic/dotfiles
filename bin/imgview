@@ -1,0 +1,10 @@
+#!/bin/bash
+# Display image in terminal using kitty graphics protocol via chafa
+# Designed for use inside tmux over SSH
+# Disable alternate screen so the image stays visible
+printf '\e[?1049l'
+clear
+chafa -f kitty --passthrough tmux --animate off "$1"
+read -rsn1
+# Re-enable alternate screen for yazi
+printf '\e[?1049h'
