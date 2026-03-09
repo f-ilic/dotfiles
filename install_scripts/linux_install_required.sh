@@ -13,7 +13,7 @@ sudo apt update
 
 # Install core dependencies
 echo "📝 Installing core dependencies..."
-sudo apt install -y zsh fzf micro curl wget git build-essential zsh-syntax-highlighting fonts-firacode
+sudo apt install -y zsh fzf micro curl wget git build-essential zsh-syntax-highlighting fonts-firacode chafa
 
 # Install snap packages
 echo "🛠️ Installing additional tools..."
