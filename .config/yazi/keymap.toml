@@ -19,7 +19,7 @@ on = [ "l" ]
 run = "enter"
 desc = "Enter directory or open file"
 
-[[mgr.prepend_keymap]]
+[[mgr.prepend_keymap]]      # Enable this in MacOS / the PC that you have locally. Disable on remote.
 on = "y"
 run = [ "yank", "plugin clippy" ]
 # ------------ ------------------- ------------
@@ -44,6 +44,11 @@ on = [ "b", "D" ]
 run = "plugin bookmarks delete_all"
 desc = "Delete all bookmarks"
 
+
+[[mgr.prepend_keymap]]
+on = [ "I" ]
+run = 'shell --block -- imgview %h'
+desc = "View image full-size in terminal"
 
 [[input.prepend_keymap]]
 on   = "<Esc>"
