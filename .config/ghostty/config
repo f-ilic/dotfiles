@@ -2,9 +2,7 @@ font-family = Fira Code
 font-size = 14
 
 font-feature=-calt, -liga, -dlig
-theme = Xcode Dark hc
-#theme = dark:Xcode Dark hc,light:Xcode Light hc
-#theme = dark:rose-pine-moon,light:rose-pine-moon
+theme = Xcode Dark
 cursor-style = block
 cursor-style-blink = false
 
@@ -13,9 +11,12 @@ shell-integration-features = no-cursor,sudo
 macos-titlebar-style = tabs
 macos-option-as-alt = true
 macos-titlebar-proxy-icon = hidden
+macos-titlebar-style = hidden
+window-decoration = false
 
 # So it does not get in the way of moving lines up
 # in micro / helix
 keybind = alt+cmd+i=unbind 
+keybind = cmd+r=prompt_surface_title
 
 term=xterm-ghostty

@@ -1,0 +1,196 @@
+#!/Users/filic/miniconda3/envs/ml/bin/python
+"""Textual TUI for grid-images — create a photo collage from images in a directory."""
+
+import os
+import shlex
+import subprocess
+
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    Label,
+    RichLog,
+    Static,
+)
+from textual import on, work
+
+BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grid-images")
+
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif")
+
+
+class GridImagesApp(App):
+    TITLE = "grid-images"
+    SUB_TITLE = "Photo collage from images"
+
+    theme = "nord"
+
+    BINDINGS = [
+        Binding("ctrl+r", "run_command", "Run"),
+        Binding("ctrl+l", "clear_log", "Clear log"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("escape", "quit", "Quit", show=False),
+    ]
+
+    CSS = """
+    Screen { layout: vertical; }
+
+    #form { padding: 1 2; height: auto; }
+
+    .section-title { text-style: bold; color: $accent; height: 1; margin: 1 0 0 0; }
+
+    .field-row { height: 1; margin: 0 0 1 0; }
+
+    .field-label { width: 16; height: 1; padding: 0; text-style: bold; color: $text-muted; }
+
+    Input { border: none; height: 1; padding: 0 1; width: 1fr; }
+
+    #options-row { height: 1; margin: 0 0 1 0; }
+    #options-row .field-label { width: 14; }
+    #options-row Input { width: 10; margin-right: 2; }
+
+    #image-count { color: $success; height: 1; margin: 0; }
+
+    #command-preview { margin: 1 0; padding: 0 1; background: $surface; height: auto; color: $text-muted; }
+
+    #btn-row { height: auto; margin: 1 2; }
+    .action-btn { width: 1fr; min-width: 10; height: 1; border: none; margin: 0 1 0 0; }
+
+    #output { margin: 0 2 1 2; height: 1fr; border: tall $accent; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+
+        with Vertical(id="form"):
+            yield Static("── Directory ──", classes="section-title")
+            with Horizontal(classes="field-row"):
+                yield Label("Image directory:", classes="field-label")
+                yield Input(value=".", placeholder="directory containing images", id="directory")
+
+            yield Static("── Options ──", classes="section-title")
+            with Horizontal(id="options-row"):
+                yield Label("Images per row:", classes="field-label")
+                yield Input(value="4", id="rows")
+                yield Label("Border (px):", classes="field-label")
+                yield Input(value="5", id="border")
+
+            with Horizontal(classes="field-row"):
+                yield Label("Output file:", classes="field-label")
+                yield Input(value="output.jpg", id="output-path")
+
+            yield Static("", id="image-count")
+            yield Static("", id="command-preview")
+
+        with Horizontal(id="btn-row"):
+            yield Button("▶  Run", id="run-btn", variant="primary", classes="action-btn")
+            yield Button("Clear Log", id="clear-btn", variant="default", classes="action-btn")
+
+        yield RichLog(id="output", highlight=True, markup=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._update_preview()
+        self._update_image_count()
+
+    @on(Input.Changed)
+    def _on_input_changed(self, event: Input.Changed) -> None:
+        self._update_preview()
+        if event.input.id == "directory":
+            self._update_image_count()
+
+    def _update_image_count(self) -> None:
+        directory = self.query_one("#directory", Input).value.strip() or "."
+        path = os.path.expanduser(directory)
+        count_label = self.query_one("#image-count", Static)
+        if os.path.isdir(path):
+            files = [
+                f for f in os.listdir(path)
+                if os.path.splitext(f)[1].lower() in IMAGE_EXTS
+            ]
+            count_label.update(f"[bold]{len(files)}[/] images found")
+        else:
+            count_label.update("[dim]directory not found[/]")
+
+    def _update_preview(self) -> None:
+        cmd = self._build_command()
+        preview = self.query_one("#command-preview", Static)
+        if cmd:
+            preview.update(f"[bold]$[/bold] {shlex.join(cmd)}")
+        else:
+            preview.update("[dim italic]…[/]")
+
+    def _build_command(self) -> list[str] | None:
+        rows = self.query_one("#rows", Input).value.strip()
+        border = self.query_one("#border", Input).value.strip()
+        output = self.query_one("#output-path", Input).value.strip()
+        if not output:
+            return None
+
+        cmd = [BIN]
+        if rows and rows != "4":
+            cmd += ["--rows", rows]
+        if border and border != "5":
+            cmd += ["--border", border]
+        if output and output != "output.jpg":
+            cmd += ["--output", output]
+        return cmd
+
+    def action_run_command(self) -> None:
+        self._run()
+
+    def action_clear_log(self) -> None:
+        self.query_one("#output", RichLog).clear()
+
+    @on(Button.Pressed, "#run-btn")
+    def _on_run_pressed(self) -> None:
+        self._run()
+
+    @on(Button.Pressed, "#clear-btn")
+    def _on_clear_pressed(self) -> None:
+        self.query_one("#output", RichLog).clear()
+
+    @work(thread=True)
+    def _run(self) -> None:
+        cmd = self._build_command()
+        log = self.query_one("#output", RichLog)
+        btn = self.query_one("#run-btn", Button)
+        directory = self.query_one("#directory", Input).value.strip() or "."
+
+        if not cmd:
+            self.call_from_thread(log.write, "[bold red]Error:[/] fill in the output file field.")
+            return
+
+        cwd = os.path.expanduser(directory)
+        if not os.path.isdir(cwd):
+            self.call_from_thread(log.write, f"[bold red]Error:[/] directory not found: {cwd}")
+            return
+
+        self.call_from_thread(setattr, btn, "disabled", True)
+        self.call_from_thread(log.write, f"[bold green]▶ Running in {cwd}:[/] {shlex.join(cmd)}")
+        self.call_from_thread(log.write, "")
+
+        try:
+            proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                self.call_from_thread(log.write, line.rstrip())
+            proc.wait()
+            if proc.returncode == 0:
+                self.call_from_thread(log.write, "\n[bold green]✓ Done![/]")
+            else:
+                self.call_from_thread(log.write, f"\n[bold red]✗ Failed with exit code {proc.returncode}[/]")
+        except FileNotFoundError:
+            self.call_from_thread(log.write, f"[bold red]Error:[/] {BIN} not found")
+        except Exception as e:
+            self.call_from_thread(log.write, f"[bold red]Error:[/] {e}")
+        finally:
+            self.call_from_thread(setattr, btn, "disabled", False)
+
+
+if __name__ == "__main__":
+    GridImagesApp().run()

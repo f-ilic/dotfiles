@@ -1,0 +1,245 @@
+#!/Users/filic/miniconda3/envs/ml/bin/python
+"""Textual TUI for stack-videos — stack two videos horizontally or vertically."""
+
+import os
+import shlex
+import subprocess
+
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    Label,
+    RichLog,
+    Select,
+    Static,
+)
+from textual import on, work
+
+BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stack-videos")
+
+DEFAULT_LAYOUTS = {"h": "0_0|w0_0", "v": "0_0|0_h0"}
+
+PLACEHOLDERS = {
+    "h": ("path/to/left.mp4", "path/to/right.mp4", "caption for left video", "caption for right video"),
+    "v": ("path/to/top.mp4", "path/to/bottom.mp4", "caption for top video", "caption for bottom video"),
+}
+
+
+class StackVideosApp(App):
+    TITLE = "stack-videos"
+    SUB_TITLE = "Stack two videos horizontally or vertically"
+
+    theme = "nord"
+
+    BINDINGS = [
+        Binding("ctrl+r", "run_command", "Run"),
+        Binding("ctrl+l", "clear_log", "Clear log"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("escape", "quit", "Quit", show=False),
+    ]
+
+    CSS = """
+    Screen { layout: vertical; }
+
+    #form { padding: 1 2; height: auto; }
+
+    .section-title { text-style: bold; color: $accent; height: 1; margin: 1 0 0 0; }
+
+    .field-row { height: 1; margin: 0 0 1 0; }
+
+    .field-label { width: 12; height: 1; padding: 0; text-style: bold; color: $text-muted; }
+
+    Input { border: none; height: 1; padding: 0 1; width: 1fr; }
+
+    Select { border: none; height: 1; padding: 0; }
+    SelectCurrent { border: none; height: 1; padding: 0 1; }
+
+    #options-row { height: 1; margin: 0 0 1 0; }
+    #options-row .field-label { width: 10; }
+    #options-row Input { width: 12; margin-right: 1; }
+
+    #direction-row { height: 1; margin: 0 0 1 0; }
+    #direction-row .field-label { width: 12; }
+    #direction-select { width: 20; }
+    #duration-select { width: 16; }
+
+    .wide-row { height: 1; margin: 0 0 1 0; }
+    .wide-row .field-label { width: 12; }
+
+    #command-preview { margin: 1 0; padding: 0 1; background: $surface; height: auto; color: $text-muted; }
+
+    #btn-row { height: auto; margin: 1 2; }
+    .action-btn { width: 1fr; min-width: 10; height: 1; border: none; margin: 0 1 0 0; }
+
+    #output { margin: 0 2 1 2; height: 1fr; border: tall $accent; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+
+        with Vertical(id="form"):
+            yield Static("── Direction ──", classes="section-title")
+            with Horizontal(id="direction-row"):
+                yield Label("Direction:", classes="field-label")
+                yield Select(
+                    [("Horizontal", "h"), ("Vertical", "v")],
+                    value="h",
+                    id="direction-select",
+                )
+
+            yield Static("── Files ──", classes="section-title")
+            with Horizontal(classes="field-row"):
+                yield Label("Input 1:", classes="field-label")
+                yield Input(placeholder="path/to/left.mp4", id="input1", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Label("Input 2:", classes="field-label")
+                yield Input(placeholder="path/to/right.mp4", id="input2", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Label("Output:", classes="field-label")
+                yield Input(placeholder="path/to/output.mp4", id="output-path", classes="field-input")
+
+            yield Static("── Captions ──", classes="section-title")
+            with Horizontal(classes="field-row"):
+                yield Label("Caption 1:", classes="field-label")
+                yield Input(placeholder="optional — caption for left video", id="caption1", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Label("Caption 2:", classes="field-label")
+                yield Input(placeholder="optional — caption for right video", id="caption2", classes="field-input")
+
+            yield Static("── Options ──", classes="section-title")
+            with Horizontal(id="options-row"):
+                yield Label("Scale:", classes="field-label")
+                yield Input(value="hd720", id="scale", classes="field-input")
+                yield Label("Font size:", classes="field-label")
+                yield Input(value="24", id="fontsize", classes="field-input")
+                yield Label("Duration:", classes="field-label")
+                yield Select(
+                    [("Longest", "longest"), ("Shortest", "shortest")],
+                    value="longest",
+                    id="duration-select",
+                )
+            with Horizontal(classes="wide-row"):
+                yield Label("Layout:", classes="field-label")
+                yield Input(value="0_0|w0_0", id="layout", classes="field-input")
+
+            yield Static("", id="command-preview")
+
+        with Horizontal(id="btn-row"):
+            yield Button("▶  Run", id="run-btn", variant="primary", classes="action-btn")
+            yield Button("Clear Log", id="clear-btn", variant="default", classes="action-btn")
+
+        yield RichLog(id="output", highlight=True, markup=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._update_preview()
+
+    @on(Select.Changed, "#direction-select")
+    def _on_direction_changed(self, event: Select.Changed) -> None:
+        d = str(event.value)
+        ph = PLACEHOLDERS.get(d, PLACEHOLDERS["h"])
+        self.query_one("#input1", Input).placeholder = ph[0]
+        self.query_one("#input2", Input).placeholder = ph[1]
+        self.query_one("#caption1", Input).placeholder = f"optional — {ph[2]}"
+        self.query_one("#caption2", Input).placeholder = f"optional — {ph[3]}"
+        layout_input = self.query_one("#layout", Input)
+        old_default = DEFAULT_LAYOUTS["h" if d == "v" else "v"]
+        if layout_input.value == old_default or not layout_input.value.strip():
+            layout_input.value = DEFAULT_LAYOUTS[d]
+        self._update_preview()
+
+    @on(Input.Changed)
+    @on(Select.Changed)
+    def _update_preview(self, event=None) -> None:
+        cmd = self._build_command()
+        preview = self.query_one("#command-preview", Static)
+        if cmd:
+            preview.update(f"[bold]$[/bold] {shlex.join(cmd)}")
+        else:
+            preview.update("[dim italic]fill in the required file fields to see command preview[/]")
+
+    def _build_command(self) -> list[str] | None:
+        input1 = self.query_one("#input1", Input).value.strip()
+        input2 = self.query_one("#input2", Input).value.strip()
+        output = self.query_one("#output-path", Input).value.strip()
+        if not all([input1, input2, output]):
+            return None
+
+        cmd = [BIN, input1, input2, output]
+
+        direction = self.query_one("#direction-select", Select).value
+        caption1 = self.query_one("#caption1", Input).value.strip()
+        caption2 = self.query_one("#caption2", Input).value.strip()
+        scale = self.query_one("#scale", Input).value.strip()
+        layout = self.query_one("#layout", Input).value.strip()
+        fontsize = self.query_one("#fontsize", Input).value.strip()
+        duration = self.query_one("#duration-select", Select).value
+
+        if direction and direction != "h":
+            cmd += ["--direction", str(direction)]
+        if caption1:
+            cmd += ["--caption1", caption1]
+        if caption2:
+            cmd += ["--caption2", caption2]
+        if scale and scale != "hd720":
+            cmd += ["--scale", scale]
+        default_layout = DEFAULT_LAYOUTS.get(str(direction) if direction else "h", "0_0|w0_0")
+        if layout and layout != default_layout:
+            cmd += ["--layout", layout]
+        if fontsize and fontsize != "24":
+            cmd += ["--fontsize", fontsize]
+        if duration and duration != "longest":
+            cmd += ["--duration", str(duration)]
+        return cmd
+
+    def action_run_command(self) -> None:
+        self._run()
+
+    def action_clear_log(self) -> None:
+        self.query_one("#output", RichLog).clear()
+
+    @on(Button.Pressed, "#run-btn")
+    def _on_run_pressed(self) -> None:
+        self._run()
+
+    @on(Button.Pressed, "#clear-btn")
+    def _on_clear_pressed(self) -> None:
+        self.query_one("#output", RichLog).clear()
+
+    @work(thread=True)
+    def _run(self) -> None:
+        cmd = self._build_command()
+        log = self.query_one("#output", RichLog)
+        btn = self.query_one("#run-btn", Button)
+        if not cmd:
+            self.call_from_thread(log.write, "[bold red]Error:[/] fill in all three file fields first.")
+            return
+
+        self.call_from_thread(setattr, btn, "disabled", True)
+        self.call_from_thread(log.write, f"[bold green]▶ Running:[/] {shlex.join(cmd)}")
+        self.call_from_thread(log.write, "")
+
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                self.call_from_thread(log.write, line.rstrip())
+            proc.wait()
+            if proc.returncode == 0:
+                self.call_from_thread(log.write, "\n[bold green]✓ Done![/]")
+            else:
+                self.call_from_thread(log.write, f"\n[bold red]✗ Failed with exit code {proc.returncode}[/]")
+        except FileNotFoundError:
+            self.call_from_thread(log.write, f"[bold red]Error:[/] {BIN} not found")
+        except Exception as e:
+            self.call_from_thread(log.write, f"[bold red]Error:[/] {e}")
+        finally:
+            self.call_from_thread(setattr, btn, "disabled", False)
+
+
+if __name__ == "__main__":
+    StackVideosApp().run()
