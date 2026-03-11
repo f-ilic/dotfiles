@@ -58,6 +58,29 @@ if [[ ! -d "$HOME/bin" ]]; then
     mkdir -p "$HOME/bin"
 fi
 
+# Setup ~/.zshrc
+DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ZSHRC_TEMPLATE="$DOTFILES_DIR/.zshrc"
+
+if [[ ! -f "$HOME/.zshrc" ]]; then
+    echo "📄 Creating ~/.zshrc from dotfiles template..."
+    cp "$ZSHRC_TEMPLATE" "$HOME/.zshrc"
+else
+    echo "📄 ~/.zshrc already exists, checking for required lines..."
+    PREPEND=""
+    if ! grep -q 'infocmp "\$TERM"' "$HOME/.zshrc"; then
+        PREPEND='# Fall back to xterm-256color if the current TERM has no terminfo entry (e.g. xterm-ghostty over SSH)\nif ! infocmp "$TERM" &>/dev/null; then\n    export TERM=xterm-256color\nfi\n\n'"$PREPEND"
+    fi
+    if ! grep -q 'source.*config/zsh/init.zsh' "$HOME/.zshrc"; then
+        PREPEND="${PREPEND}"'source "${HOME}/.config/zsh/init.zsh"\n\n'
+    fi
+    if [[ -n "$PREPEND" ]]; then
+        echo "  → Prepending missing lines to ~/.zshrc"
+        printf "$PREPEND" | cat - "$HOME/.zshrc" > /tmp/.zshrc_tmp && mv /tmp/.zshrc_tmp "$HOME/.zshrc"
+    else
+        echo "  → ~/.zshrc already has required lines, skipping"
+    fi
+fi
 
 echo "✅ Installation complete!"
 echo ""
