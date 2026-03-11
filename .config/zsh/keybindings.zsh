@@ -3,8 +3,12 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
     source <(fzf --zsh)
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    # Linux
-    [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+    # Linux - try git-installed first, then apt-installed location
+    if [ -f ~/.fzf.zsh ]; then
+        source ~/.fzf.zsh
+    elif [ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]; then
+        source /usr/share/doc/fzf/examples/key-bindings.zsh
+    fi
 fi
 
 bindkey -r '^[p' # Disable Alt+p for tmux compatibility
