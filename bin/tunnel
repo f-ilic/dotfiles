@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+# tunnel — manage persistent SSH port forwards
+#
+# Usage:
+#   tunnel start        start all tunnels
+#   tunnel stop         kill all tunnels
+#   tunnel status       show port status
+#   tunnel restart      stop then start
+#   tunnel edit         interactive port/host editor (TUI)
+#   tunnel logs         tail the connection log
+#
+
+CONFIG_FILE="$HOME/.tunnel.conf"
+LOGFILE="$HOME/.local/share/tunnel/tunnel.log"
+PIDFILE="$HOME/.local/share/tunnel/tunnel.pid"
+
+mkdir -p "$(dirname "$LOGFILE")"
+
+# ── config helpers ───────────────────────────────────────────────────────────
+
+_read_config() {
+    TOWER=""
+    PORTS=()
+    DESCS=()
+    [[ -f "$CONFIG_FILE" ]] || return
+    while IFS= read -r line; do
+        if [[ "$line" == host=* ]]; then
+            TOWER="${line#host=}"
+        elif [[ "$line" == port=* ]]; then
+            val="${line#port=}"
+            num="${val%%:*}"
+            desc="${val#*:}"
+            [[ "$num" == "$desc" ]] && desc=""  # no colon found
+            PORTS+=("$num")
+            DESCS+=("$desc")
+        fi
+    done < "$CONFIG_FILE"
+}
+
+_build_port_args() {
+    local args=()
+    for port in "${PORTS[@]}"; do
+        args+=(-L "${port}:localhost:${port}")
+    done
+    echo "${args[@]}"
+}
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+cmd_start() {
+    _read_config
+    if [[ -z "$TOWER" ]]; then
+        echo "tunnel: no host configured — run: tunnel edit"
+        return 1
+    fi
+    if [[ ${#PORTS[@]} -eq 0 ]]; then
+        echo "tunnel: no ports configured — run: tunnel edit"
+        return 1
+    fi
+    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "tunnel: already running (pid $(cat "$PIDFILE"))"
+        return 1
+    fi
+
+    local port_args
+    read -ra port_args <<< "$(_build_port_args)"
+
+    echo "[$(date '+%F %T')] starting tunnels to $TOWER: ports ${PORTS[*]}" >> "$LOGFILE"
+
+    AUTOSSH_LOGFILE="$LOGFILE" \
+    AUTOSSH_POLL=30 \
+    AUTOSSH_GATETIME=0 \
+    autossh -M 0 -f -N \
+        -o "ServerAliveInterval=15" \
+        -o "ServerAliveCountMax=3" \
+        -o "ExitOnForwardFailure=yes" \
+        -o "ConnectTimeout=10" \
+        "${port_args[@]}" \
+        "$TOWER"
+
+    sleep 0.5
+    local pid
+    pid=$(pgrep -n -f "autossh.*$TOWER" 2>/dev/null)
+    if [[ -n "$pid" ]]; then
+        echo "$pid" > "$PIDFILE"
+        echo "tunnel: started (pid $pid) — forwarding ports: ${PORTS[*]}"
+    else
+        echo "tunnel: failed to start — check: tunnel logs"
+        return 1
+    fi
+}
+
+cmd_stop() {
+    _read_config
+    if [[ -f "$PIDFILE" ]]; then
+        local pid
+        pid=$(cat "$PIDFILE")
+        if kill "$pid" 2>/dev/null; then
+            echo "tunnel: stopped (pid $pid)"
+        else
+            echo "tunnel: pid $pid was not running"
+        fi
+        rm -f "$PIDFILE"
+    fi
+    [[ -n "$TOWER" ]] && pkill -f "autossh.*$TOWER" 2>/dev/null
+    [[ -n "$TOWER" ]] && pkill -f "ssh.*$TOWER.*-N" 2>/dev/null
+    echo "[$(date '+%F %T')] tunnels stopped" >> "$LOGFILE"
+}
+
+cmd_status() {
+    _read_config
+    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "tunnel: RUNNING (pid $(cat "$PIDFILE")) → $TOWER"
+    else
+        echo "tunnel: STOPPED"
+    fi
+
+    if [[ ${#PORTS[@]} -eq 0 ]]; then
+        echo "  (no ports configured)"
+        return
+    fi
+
+    echo ""
+    printf "  %-7s %-10s %s\n" "PORT" "REACHABLE" "DESCRIPTION"
+    echo "  ─────────────────────────────────────"
+    for i in "${!PORTS[@]}"; do
+        port="${PORTS[$i]}"
+        desc="${DESCS[$i]}"
+        if nc -z -w1 localhost "$port" 2>/dev/null; then
+            reach="yes"
+        else
+            reach="no"
+        fi
+        printf "  %-7s %-10s %s\n" "$port" "$reach" "$desc"
+    done
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_logs() {
+    if [[ ! -f "$LOGFILE" ]]; then
+        echo "tunnel: no log file yet"
+        return
+    fi
+    tail -f "$LOGFILE"
+}
+
+cmd_edit() {
+    local tmp
+    tmp=$(mktemp /tmp/tunnel-edit-XXXXXX.py)
+    cat > "$tmp" << 'PYTHON'
+#!/usr/bin/env python3
+import curses, sys, os, re
+
+CONFIG = sys.argv[1]
+
+def load():
+    host, ports = "", []
+    if os.path.exists(CONFIG):
+        for line in open(CONFIG):
+            line = line.rstrip()
+            if line.startswith("host="):
+                host = line[5:]
+            elif line.startswith("port="):
+                val = line[5:]
+                num, sep, desc = val.partition(":")
+                ports.append([num.strip(), desc.strip()])
+    return host, ports
+
+def save(host, ports):
+    with open(CONFIG, "w") as f:
+        f.write(f"host={host}\n")
+        for num, desc in ports:
+            f.write(f"port={num}:{desc}\n")
+
+def read_line(stdscr, prompt, default=""):
+    h, w = stdscr.getmaxyx()
+    curses.curs_set(1)
+    buf = list(default)
+    while True:
+        stdscr.move(h - 2, 0)
+        stdscr.clrtoeol()
+        line = f"  {prompt}: {''.join(buf)}"
+        stdscr.addstr(h - 2, 0, line[:w - 1])
+        stdscr.refresh()
+        ch = stdscr.getch()
+        if ch in (10, 13):
+            curses.curs_set(0)
+            return "".join(buf)
+        elif ch == 27:
+            curses.curs_set(0)
+            return None
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            if buf:
+                buf.pop()
+        elif 32 <= ch < 127:
+            buf.append(chr(ch))
+
+def draw(stdscr, host, ports, sel, msg):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+
+    try:
+        stdscr.addstr(0, 0, " tunnel config", curses.A_BOLD)
+        stdscr.addstr(1, 0, f"  host  {host or '(not set)'}", curses.A_DIM if not host else 0)
+        stdscr.addstr(2, 0, "")
+        stdscr.addstr(3, 0, f"  {'PORT':<8}DESCRIPTION")
+        stdscr.addstr(4, 0, "  " + "\u2500" * min(44, w - 3))
+
+        for i, (num, desc) in enumerate(ports):
+            row = 5 + i
+            if row >= h - 3:
+                break
+            attr = curses.A_REVERSE if i == sel else curses.A_NORMAL
+            line = f"  {num:<8}{desc}"
+            padded = line[:w - 1].ljust(min(w - 1, max(len(line), 20)))
+            stdscr.addstr(row, 0, padded, attr)
+
+        if not ports:
+            stdscr.addstr(5, 0, "  (no ports — press a to add)", curses.A_DIM)
+
+        footer = "  a add   d del   e/\u23ce edit   H host   q save   Q quit"
+        stdscr.addstr(h - 3, 0, "\u2500" * (w - 1), curses.A_DIM)
+        stdscr.addstr(h - 2, 0, footer[:w - 1])
+        if msg:
+            stdscr.addstr(h - 1, 0, f"  {msg}"[:w - 1], curses.A_DIM)
+    except curses.error:
+        pass
+
+    stdscr.refresh()
+
+def main(stdscr):
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    host, ports = load()
+    sel = 0
+    msg = ""
+
+    while True:
+        if ports:
+            sel = max(0, min(sel, len(ports) - 1))
+
+        draw(stdscr, host, ports, sel, msg)
+        msg = ""
+        ch = stdscr.getch()
+
+        if ch == ord('q'):
+            save(host, ports)
+            break
+        elif ch in (ord('Q'), 27):
+            break
+        elif ch in (ord('j'), curses.KEY_DOWN):
+            sel += 1
+        elif ch in (ord('k'), curses.KEY_UP):
+            sel -= 1
+        elif ch == ord('H'):
+            result = read_line(stdscr, "host", host)
+            if result is not None:
+                host = result
+        elif ch in (ord('e'), 10, 13) and ports:
+            num, desc = ports[sel]
+            new_num = read_line(stdscr, "port number", num)
+            if new_num is not None:
+                if not re.fullmatch(r'\d+', new_num) or not (1 <= int(new_num) <= 65535):
+                    msg = "invalid port number"
+                else:
+                    new_desc = read_line(stdscr, "description", desc)
+                    if new_desc is not None:
+                        ports[sel] = [new_num, new_desc]
+        elif ch == ord('a'):
+            new_num = read_line(stdscr, "port number", "")
+            if new_num is not None:
+                if not re.fullmatch(r'\d+', new_num) or not (1 <= int(new_num) <= 65535):
+                    msg = "invalid port number"
+                else:
+                    new_desc = read_line(stdscr, "description", "")
+                    if new_desc is not None:
+                        ins = sel + 1 if ports else 0
+                        ports.insert(ins, [new_num, new_desc])
+                        sel = ins
+        elif ch == ord('d') and ports:
+            ports.pop(sel)
+            sel = min(sel, max(0, len(ports) - 1))
+
+curses.wrapper(main)
+PYTHON
+    python3 "$tmp" "$CONFIG_FILE"
+    local rc=$?
+    rm -f "$tmp"
+    return $rc
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+
+case "${1:-status}" in
+    start)   cmd_start   ;;
+    stop)    cmd_stop    ;;
+    status)  cmd_status  ;;
+    restart) cmd_restart ;;
+    edit)    cmd_edit    ;;
+    logs)    cmd_logs    ;;
+    *)
+        echo "usage: tunnel {start|stop|status|restart|edit|logs}"
+        exit 1
+        ;;
+esac
