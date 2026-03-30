@@ -1,0 +1,19 @@
+#!/bin/bash
+# Full-screen preview: chafa for images, $EDITOR for everything else
+# Designed for use inside tmux over SSH
+
+ext="${1##*.}"
+ext="${ext,,}" # lowercase
+
+case "$ext" in
+    png|jpg|jpeg|gif|bmp|webp|tiff|tif|svg|ico)
+        printf '\e[?1049l'
+        clear
+        chafa -f kitty --passthrough tmux --animate off "$1"
+        read -rsn1
+        printf '\e[?1049h'
+        ;;
+    *)
+        rich --force-terminal --left --line-numbers --guides "$1" | less -R
+        ;;
+esac
