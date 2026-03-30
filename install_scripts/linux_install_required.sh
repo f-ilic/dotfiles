@@ -24,6 +24,11 @@ if ! command -v lazygit &> /dev/null; then
     sudo mv /tmp/lazygit /usr/local/bin/lazygit
 fi
 
+# Install rich-cli via pipx
+echo "👌 Installing Nice-To-Have's"
+sudo apt install -y pipx
+pipx install rich-cli
+
 # Install snap packages
 echo "🛠️ Installing additional tools..."
 sudo snap install yazi --classic

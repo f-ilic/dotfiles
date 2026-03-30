@@ -51,6 +51,7 @@ brew install --cask font-fira-code
 echo "👌 Installing Nice-To-Have's"
 brew install tldr
 brew install neilberkman/clippy/clippy
+brew install rich-cli
 
 # Create ~/bin directory if it doesn't exist
 if [[ ! -d "$HOME/bin" ]]; then
