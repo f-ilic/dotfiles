@@ -13,7 +13,7 @@ sudo apt update
 
 # Install core dependencies
 echo "📝 Installing core dependencies..."
-sudo apt install -y zsh fzf micro curl wget git build-essential zsh-syntax-highlighting fonts-firacode chafa
+sudo apt install -y zsh fzf micro curl wget git build-essential zsh-syntax-highlighting fonts-firacode chafa git-delta
 
 # Install lazygit (not in apt repos)
 echo "📝 Installing lazygit..."

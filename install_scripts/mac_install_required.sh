@@ -36,6 +36,7 @@ brew install micro
 brew install zsh-syntax-highlighting
 brew install lazygit
 brew install chafa
+brew install git-delta
 
 echo "🛠️ Installing additional tools..."
 brew install --cask ghostty
