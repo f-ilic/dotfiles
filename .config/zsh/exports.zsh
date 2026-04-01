@@ -10,5 +10,6 @@ export VISUAL="$EDITOR"
 export XDG_CONFIG_HOME="$HOME/.config"
 
 export FZF_DEFAULT_OPTS="--border --layout reverse --bind=ctrl-k:kill-line"
+export FZF_CTRL_R_OPTS="--preview-window=hidden"
 export FZF_CTRL_T_OPTS="--style=full --preview='fzf-preview.sh {}'"
 export FZF_ALT_C_OPTS="--preview 'tree -C {}'"
