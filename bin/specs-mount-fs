@@ -1,0 +1,860 @@
+#!/usr/bin/env python3
+"""specs-mount-fs — mount a Spectacles ADB device as a FUSE filesystem.
+
+Default mode launches a Textual TUI to pick a device + mountpoint and runs
+sshfs against a bundled SFTP-over-stdio shim that translates SFTP requests
+to `adb exec-out` calls. The shim is invoked as ssh_command and lives in this
+same file (see --sftp-server).
+"""
+
+from __future__ import annotations
+
+import os
+import shlex
+import shutil
+import stat as _stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+from pathlib import Path
+from typing import Iterable, Optional
+
+# ────────────────────────────────────────────────────────────────────────────
+# Shared
+# ────────────────────────────────────────────────────────────────────────────
+
+SCRIPT_PATH = os.path.realpath(__file__)
+DEFAULT_MOUNT_BASE = Path.home() / "mnt"
+
+# ────────────────────────────────────────────────────────────────────────────
+# SFTP server (bundled shim, invoked as `<this-file> --sftp-server SERIAL`)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Module globals are populated when run_sftp_server starts. Keeping them at
+# module scope lets dispatch helpers stay short.
+DEVICE: str = ""
+LOCAL_UID: int = 0
+LOCAL_GID: int = 0
+DEBUG: bool = False
+
+# SFTP v3 packet types
+SSH_FXP_INIT, SSH_FXP_VERSION = 1, 2
+SSH_FXP_OPEN, SSH_FXP_CLOSE = 3, 4
+SSH_FXP_READ, SSH_FXP_WRITE = 5, 6
+SSH_FXP_LSTAT, SSH_FXP_FSTAT = 7, 8
+SSH_FXP_SETSTAT, SSH_FXP_FSETSTAT = 9, 10
+SSH_FXP_OPENDIR, SSH_FXP_READDIR = 11, 12
+SSH_FXP_REMOVE, SSH_FXP_MKDIR, SSH_FXP_RMDIR = 13, 14, 15
+SSH_FXP_REALPATH, SSH_FXP_STAT = 16, 17
+SSH_FXP_RENAME, SSH_FXP_READLINK, SSH_FXP_SYMLINK = 18, 19, 20
+SSH_FXP_STATUS, SSH_FXP_HANDLE = 101, 102
+SSH_FXP_DATA, SSH_FXP_NAME, SSH_FXP_ATTRS = 103, 104, 105
+
+SSH_FX_OK, SSH_FX_EOF, SSH_FX_NO_SUCH_FILE = 0, 1, 2
+SSH_FX_PERMISSION_DENIED, SSH_FX_FAILURE = 3, 4
+SSH_FX_OP_UNSUPPORTED = 8
+
+A_SIZE, A_UIDGID, A_PERMS, A_TIME = 0x01, 0x02, 0x04, 0x08
+
+OPEN_READ, OPEN_WRITE, OPEN_APPEND = 0x01, 0x02, 0x04
+OPEN_CREAT, OPEN_TRUNC, OPEN_EXCL = 0x08, 0x10, 0x20
+
+_OK_SENTINEL = b"__SFTP_OK_DELIM_zX9__"
+
+
+def _log(*a):
+    if DEBUG:
+        sys.stderr.write("[adb-sftp] " + " ".join(str(x) for x in a) + "\n")
+        sys.stderr.flush()
+
+
+# --- I/O ----------------------------------------------------------------
+def _read_full(fh, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = fh.read(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
+def _read_packet(fh):
+    h = _read_full(fh, 4)
+    if h is None:
+        return None, None
+    length = struct.unpack("!I", h)[0]
+    body = _read_full(fh, length)
+    if not body:
+        return None, None
+    return body[0], body[1:]
+
+
+def _write_packet(fh, typ, payload):
+    pkt = bytes([typ]) + payload
+    fh.write(struct.pack("!I", len(pkt)) + pkt)
+    fh.flush()
+
+
+# --- packing ------------------------------------------------------------
+def _pu32(n): return struct.pack("!I", n & 0xFFFFFFFF)
+def _pu64(n): return struct.pack("!Q", n & 0xFFFFFFFFFFFFFFFF)
+
+
+def _pstr(s):
+    if isinstance(s, str):
+        s = s.encode("utf-8")
+    return _pu32(len(s)) + s
+
+
+def _pack_attrs(mode=None, size=None, uid=None, gid=None, atime=None, mtime=None):
+    flags, out = 0, b""
+    if size is not None:
+        flags |= A_SIZE; out += _pu64(size)
+    if uid is not None and gid is not None:
+        flags |= A_UIDGID; out += _pu32(uid) + _pu32(gid)
+    if mode is not None:
+        flags |= A_PERMS; out += _pu32(mode)
+    if atime is not None and mtime is not None:
+        flags |= A_TIME; out += _pu32(atime) + _pu32(mtime)
+    return _pu32(flags) + out
+
+
+class _Reader:
+    __slots__ = ("d", "p")
+    def __init__(self, data): self.d, self.p = data, 0
+    def u32(self):
+        v = struct.unpack_from("!I", self.d, self.p)[0]; self.p += 4; return v
+    def u64(self):
+        v = struct.unpack_from("!Q", self.d, self.p)[0]; self.p += 8; return v
+    def s(self):
+        n = self.u32()
+        v = self.d[self.p:self.p + n]; self.p += n
+        return v.decode("utf-8", "replace")
+    def attrs(self):
+        out = {"flags": self.u32()}
+        f = out["flags"]
+        if f & A_SIZE:   out["size"] = self.u64()
+        if f & A_UIDGID: out["uid"] = self.u32(); out["gid"] = self.u32()
+        if f & A_PERMS:  out["mode"] = self.u32()
+        if f & A_TIME:   out["atime"] = self.u32(); out["mtime"] = self.u32()
+        return out
+
+
+# --- adb backend --------------------------------------------------------
+# `adb exec-out` does NOT propagate the remote command's exit code (it
+# always returns 0 from adb's perspective) and merges remote stderr into
+# stdout. To detect remote success we append a sentinel only echoed on
+# success.
+def _adb(args, stdin=None, stdout=subprocess.PIPE):
+    cmd = ["adb", "-s", DEVICE, "exec-out"] + args
+    return subprocess.run(cmd, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE)
+
+
+def _adb_run(args):
+    cmd_str = " ".join(shlex.quote(a) for a in args)
+    full = ["adb", "-s", DEVICE, "exec-out", "sh", "-c",
+            f"{cmd_str} && printf %s {_OK_SENTINEL.decode()}"]
+    r = subprocess.run(full, capture_output=True)
+    out = r.stdout
+    if out.endswith(_OK_SENTINEL):
+        return True, out[:-len(_OK_SENTINEL)]
+    return False, out
+
+
+def _map_err(msg_bytes):
+    s = (msg_bytes.decode("utf-8", "replace")
+         if isinstance(msg_bytes, (bytes, bytearray)) else str(msg_bytes))
+    sl = s.lower()
+    if "no such" in sl or "cannot stat" in sl or "not found" in sl or "no file" in sl:
+        return SSH_FX_NO_SUCH_FILE
+    if "permission denied" in sl:
+        return SSH_FX_PERMISSION_DENIED
+    return SSH_FX_FAILURE
+
+
+_STAT_FMT = "%f|%s|%u|%g|%X|%Y|%h"
+
+
+def _stat_one(path, follow):
+    args = ["stat"] + (["-L"] if follow else []) + ["-c", _STAT_FMT, "--", path]
+    r = _adb(args)
+    out = r.stdout.decode("utf-8", "replace").strip()
+    if not out:
+        return None, (r.stderr or b"no output")
+    line = out.splitlines()[0]
+    parts = line.split("|")
+    if len(parts) < 7:
+        return None, line.encode()  # error message merged into stdout
+    return {
+        "mode":  int(parts[0], 16),
+        "size":  int(parts[1]),
+        "uid":   LOCAL_UID,
+        "gid":   LOCAL_GID,
+        "atime": int(parts[4]),
+        "mtime": int(parts[5]),
+    }, None
+
+
+def _list_dir(path):
+    fmt = "%f|%s|%u|%g|%X|%Y|%h|%n"
+    args = ["find", path, "-mindepth", "1", "-maxdepth", "1",
+            "-exec", "stat", "-c", fmt, "{}", "+"]
+    r = _adb(args)
+    if r.returncode != 0:
+        return None, r.stderr
+    entries = []
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        if not line:
+            continue
+        parts = line.split("|", 7)
+        if len(parts) < 8:
+            _log("list parse fail:", line); continue
+        try:
+            mode = int(parts[0], 16); size = int(parts[1])
+            atime = int(parts[4]); mtime = int(parts[5])
+            full = parts[7]
+            name = full.rsplit("/", 1)[-1] if "/" in full else full
+        except ValueError:
+            _log("list parse fail:", line); continue
+        entries.append({
+            "name": name, "mode": mode, "size": size,
+            "uid": LOCAL_UID, "gid": LOCAL_GID,
+            "atime": atime, "mtime": mtime,
+        })
+    return entries, None
+
+
+def _realpath_remote(path):
+    r = _adb(["readlink", "-mn", "--", path])
+    if r.returncode == 0 and r.stdout:
+        out = r.stdout.decode("utf-8", "replace").rstrip("\n")
+        if out.startswith("/"):
+            return out
+    p = os.path.normpath(path)
+    return p if p.startswith("/") else "/" + p
+
+
+def _readlink_remote(path):
+    r = _adb(["readlink", "--", path])
+    if r.returncode != 0:
+        return None
+    return r.stdout.decode("utf-8", "replace").rstrip("\n")
+
+
+def _push(local_tmp, remote_path):
+    p = subprocess.run(["adb", "-s", DEVICE, "push", local_tmp, remote_path],
+                       capture_output=True)
+    if p.returncode == 0:
+        return True, b""
+    return False, p.stderr or p.stdout
+
+
+def _chmod(path, mode):  return _adb_run(["chmod", f"{mode & 0o7777:o}", "--", path])
+def _chown(path, u, g):  return _adb_run(["chown", f"{u}:{g}", "--", path])
+def _truncate(path, sz): return _adb_run(["truncate", "-s", str(sz), "--", path])
+
+
+def _utime(path, atime, mtime):
+    def fmt(ts): return time.strftime("%Y%m%d%H%M.%S", time.gmtime(ts))
+    _adb_run(["touch", "-a", "-t", fmt(atime), "--", path])
+    return _adb_run(["touch", "-m", "-t", fmt(mtime), "--", path])
+
+
+def _longname(name, attrs):
+    mode = attrs.get("mode", 0)
+    if   _stat.S_ISDIR(mode):  t = "d"
+    elif _stat.S_ISLNK(mode):  t = "l"
+    elif _stat.S_ISCHR(mode):  t = "c"
+    elif _stat.S_ISBLK(mode):  t = "b"
+    elif _stat.S_ISFIFO(mode): t = "p"
+    elif _stat.S_ISSOCK(mode): t = "s"
+    elif _stat.S_ISREG(mode):  t = "-"
+    else: t = "?"
+    p = ""
+    for who in ((mode >> 6) & 7, (mode >> 3) & 7, mode & 7):
+        p += ("r" if who & 4 else "-") + ("w" if who & 2 else "-") + ("x" if who & 1 else "-")
+    return f"{t}{p} 1 {attrs.get('uid',0):>5} {attrs.get('gid',0):>5} {attrs.get('size',0):>10} {name}"
+
+
+class _Handle:
+    __slots__ = ("kind", "path", "fd", "tmp", "entries", "pos",
+                 "writable", "dirty", "append")
+    def __init__(self, kind, path):
+        self.kind, self.path = kind, path
+        self.fd, self.tmp = None, None
+        self.entries, self.pos = None, 0
+        self.writable, self.dirty, self.append = False, False, False
+
+
+_handles: dict = {}
+_next_handle_id: int = 1
+
+
+def _new_handle(kind, path):
+    global _next_handle_id
+    hid = f"{kind[0]}{_next_handle_id}"
+    _next_handle_id += 1
+    _handles[hid] = _Handle(kind, path)
+    return hid
+
+
+def _reply_status(out, reqid, code, msg=""):
+    _write_packet(out, SSH_FXP_STATUS, _pu32(reqid) + _pu32(code) + _pstr(msg) + _pstr(""))
+
+
+def _reply_handle(out, reqid, h):
+    _write_packet(out, SSH_FXP_HANDLE, _pu32(reqid) + _pstr(h))
+
+
+def _reply_attrs(out, reqid, **k):
+    _write_packet(out, SSH_FXP_ATTRS, _pu32(reqid) + _pack_attrs(**k))
+
+
+def _reply_data(out, reqid, data):
+    _write_packet(out, SSH_FXP_DATA, _pu32(reqid) + _pstr(data))
+
+
+def _reply_name(out, reqid, entries):
+    payload = _pu32(reqid) + _pu32(len(entries))
+    for name, longname, attrs in entries:
+        payload += _pstr(name) + _pstr(longname) + _pack_attrs(**attrs)
+    _write_packet(out, SSH_FXP_NAME, payload)
+
+
+def _dispatch(in_, out, typ, data):
+    r = _Reader(data)
+    reqid = r.u32()
+
+    if typ == SSH_FXP_REALPATH:
+        path = r.s()
+        rp = _realpath_remote(path)
+        _reply_name(out, reqid, [(rp, rp, {"mode": _stat.S_IFDIR | 0o755})])
+
+    elif typ in (SSH_FXP_STAT, SSH_FXP_LSTAT):
+        path = r.s()
+        info, err = _stat_one(path, follow=(typ == SSH_FXP_STAT))
+        if info is None:
+            _reply_status(out, reqid, _map_err(err)); return
+        _reply_attrs(out, reqid, **info)
+
+    elif typ == SSH_FXP_FSTAT:
+        h = r.s()
+        ho = _handles.get(h)
+        if ho is None:
+            _reply_status(out, reqid, SSH_FX_FAILURE, "bad handle"); return
+        info, err = _stat_one(ho.path, follow=True)
+        if info is None:
+            _reply_status(out, reqid, _map_err(err)); return
+        _reply_attrs(out, reqid, **info)
+
+    elif typ == SSH_FXP_OPENDIR:
+        path = r.s()
+        ents, err = _list_dir(path)
+        if ents is None:
+            _reply_status(out, reqid, _map_err(err)); return
+        h = _new_handle("dir", path)
+        _handles[h].entries = ents
+        _reply_handle(out, reqid, h)
+
+    elif typ == SSH_FXP_READDIR:
+        h = r.s()
+        ho = _handles.get(h)
+        if ho is None or ho.kind != "dir":
+            _reply_status(out, reqid, SSH_FX_FAILURE, "bad handle"); return
+        if ho.pos >= len(ho.entries):
+            _reply_status(out, reqid, SSH_FX_EOF); return
+        chunk = ho.entries[ho.pos:ho.pos + 64]
+        ho.pos += len(chunk)
+        replies = []
+        for e in chunk:
+            attrs = {k: e[k] for k in ("mode", "size", "uid", "gid", "atime", "mtime")}
+            replies.append((e["name"], _longname(e["name"], attrs), attrs))
+        _reply_name(out, reqid, replies)
+
+    elif typ == SSH_FXP_OPEN:
+        path = r.s()
+        flags = r.u32()
+        r.attrs()
+        want_write = bool(flags & (OPEN_WRITE | OPEN_APPEND | OPEN_CREAT | OPEN_TRUNC))
+        existing, _ignore = _stat_one(path, follow=True)
+        if (flags & OPEN_EXCL) and (flags & OPEN_CREAT) and existing is not None:
+            _reply_status(out, reqid, SSH_FX_FAILURE, "exists"); return
+        f = tempfile.NamedTemporaryFile(delete=False, prefix="adb-sftp-")
+        tmp_path = f.name
+        f.close()
+        if existing is not None and not (flags & OPEN_TRUNC):
+            cmd = ["adb", "-s", DEVICE, "exec-out", "cat", "--", path]
+            with open(tmp_path, "wb") as fout:
+                p = subprocess.run(cmd, stdout=fout, stderr=subprocess.PIPE)
+            if p.returncode != 0:
+                os.unlink(tmp_path)
+                _reply_status(out, reqid, _map_err(p.stderr)); return
+        elif want_write and existing is None and (flags & OPEN_CREAT):
+            ok, err = _adb_run(["sh", "-c", f": > {shlex.quote(path)}"])
+            if not ok:
+                os.unlink(tmp_path)
+                _reply_status(out, reqid, _map_err(err)); return
+        local_flags = os.O_RDWR if want_write else os.O_RDONLY
+        try:
+            fd = os.open(tmp_path, local_flags)
+        except OSError as e:
+            os.unlink(tmp_path)
+            _reply_status(out, reqid, SSH_FX_FAILURE, str(e)); return
+        h = _new_handle("file", path)
+        ho = _handles[h]
+        ho.tmp, ho.fd = tmp_path, fd
+        ho.writable = want_write
+        ho.append = bool(flags & OPEN_APPEND)
+        if want_write and existing is None:
+            ho.dirty = True
+        _reply_handle(out, reqid, h)
+
+    elif typ == SSH_FXP_READ:
+        h = r.s(); offset = r.u64(); length = r.u32()
+        ho = _handles.get(h)
+        if ho is None or ho.kind != "file":
+            _reply_status(out, reqid, SSH_FX_FAILURE, "bad handle"); return
+        try:
+            os.lseek(ho.fd, offset, os.SEEK_SET)
+            buf = os.read(ho.fd, length)
+        except OSError as e:
+            _reply_status(out, reqid, SSH_FX_FAILURE, str(e)); return
+        if not buf:
+            _reply_status(out, reqid, SSH_FX_EOF); return
+        _reply_data(out, reqid, buf)
+
+    elif typ == SSH_FXP_WRITE:
+        h = r.s(); offset = r.u64(); n = r.u32()
+        chunk = r.d[r.p:r.p + n]; r.p += n
+        ho = _handles.get(h)
+        if ho is None or ho.kind != "file" or not ho.writable:
+            _reply_status(out, reqid, SSH_FX_PERMISSION_DENIED, "not writable"); return
+        try:
+            if ho.append:
+                os.lseek(ho.fd, 0, os.SEEK_END)
+            else:
+                os.lseek(ho.fd, offset, os.SEEK_SET)
+            written = os.write(ho.fd, chunk)
+            if written != len(chunk):
+                _reply_status(out, reqid, SSH_FX_FAILURE, "short write"); return
+            ho.dirty = True
+        except OSError as e:
+            _reply_status(out, reqid, SSH_FX_FAILURE, str(e)); return
+        _reply_status(out, reqid, SSH_FX_OK)
+
+    elif typ == SSH_FXP_CLOSE:
+        h = r.s()
+        ho = _handles.pop(h, None)
+        if ho is None:
+            _reply_status(out, reqid, SSH_FX_OK); return
+        push_err = None
+        try:
+            if ho.fd is not None:
+                try: os.fsync(ho.fd)
+                except Exception: pass
+                try: os.close(ho.fd)
+                except Exception: pass
+            if ho.kind == "file" and ho.writable and ho.dirty and ho.tmp:
+                ok, err = _push(ho.tmp, ho.path)
+                if not ok:
+                    push_err = err
+        finally:
+            if ho.tmp:
+                try: os.unlink(ho.tmp)
+                except Exception: pass
+        if push_err is not None:
+            _reply_status(out, reqid, _map_err(push_err), "push failed"); return
+        _reply_status(out, reqid, SSH_FX_OK)
+
+    elif typ == SSH_FXP_READLINK:
+        path = r.s()
+        target = _readlink_remote(path)
+        if not target:
+            _reply_status(out, reqid, SSH_FX_NO_SUCH_FILE); return
+        _reply_name(out, reqid, [(target, target, {"mode": _stat.S_IFLNK | 0o777})])
+
+    elif typ == SSH_FXP_REMOVE:
+        path = r.s()
+        ok, err = _adb_run(["rm", "-f", "--", path])
+        _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
+
+    elif typ == SSH_FXP_RMDIR:
+        path = r.s()
+        ok, err = _adb_run(["rmdir", "--", path])
+        _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
+
+    elif typ == SSH_FXP_MKDIR:
+        path = r.s(); attrs_in = r.attrs()
+        ok, err = _adb_run(["mkdir", "--", path])
+        if not ok:
+            _reply_status(out, reqid, _map_err(err), "mkdir failed"); return
+        if "mode" in attrs_in:
+            _chmod(path, attrs_in["mode"])
+        _reply_status(out, reqid, SSH_FX_OK)
+
+    elif typ == SSH_FXP_RENAME:
+        src = r.s(); dst = r.s()
+        ok, err = _adb_run(["mv", "--", src, dst])
+        _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
+
+    elif typ == SSH_FXP_SYMLINK:
+        # sshfs sends (target, link) — same as OpenSSH's sftp-server.
+        target = r.s(); link = r.s()
+        ok, err = _adb_run(["ln", "-s", "--", target, link])
+        _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
+
+    elif typ in (SSH_FXP_SETSTAT, SSH_FXP_FSETSTAT):
+        if typ == SSH_FXP_SETSTAT:
+            path = r.s(); ho = None
+        else:
+            h = r.s()
+            ho = _handles.get(h)
+            if ho is None:
+                _reply_status(out, reqid, SSH_FX_FAILURE, "bad handle"); return
+            path = ho.path
+        attrs_in = r.attrs()
+        all_ok = True
+        if "size" in attrs_in:
+            if typ == SSH_FXP_FSETSTAT and ho is not None and ho.fd is not None:
+                try: os.ftruncate(ho.fd, attrs_in["size"]); ho.dirty = True
+                except OSError: all_ok = False
+            else:
+                ok, _e = _truncate(path, attrs_in["size"])
+                if not ok: all_ok = False
+        if "mode" in attrs_in:
+            ok, _e = _chmod(path, attrs_in["mode"])
+            if not ok: all_ok = False
+        if "uid" in attrs_in and "gid" in attrs_in:
+            ok, _e = _chown(path, attrs_in["uid"], attrs_in["gid"])
+            if not ok: all_ok = False
+        if "atime" in attrs_in and "mtime" in attrs_in:
+            ok, _e = _utime(path, attrs_in["atime"], attrs_in["mtime"])
+            if not ok: all_ok = False
+        _reply_status(out, reqid, SSH_FX_OK if all_ok else SSH_FX_FAILURE)
+
+    else:
+        _reply_status(out, reqid, SSH_FX_OP_UNSUPPORTED, f"op {typ}")
+
+
+def run_sftp_server(device_serial: str) -> int:
+    """SFTP-over-stdio server. Used as sshfs's ssh_command."""
+    global DEVICE, LOCAL_UID, LOCAL_GID, DEBUG
+    DEVICE = device_serial
+    LOCAL_UID = os.getuid()
+    LOCAL_GID = os.getgid()
+    DEBUG = os.environ.get("ADB_SFTP_DEBUG", "0") != "0"
+    in_, out = sys.stdin.buffer, sys.stdout.buffer
+    try:
+        typ, data = _read_packet(in_)
+        if typ != SSH_FXP_INIT:
+            return 1
+        client_ver = struct.unpack("!I", data[:4])[0]
+        # Don't advertise extensions — sshfs would call them and reject
+        # creates if we replied OP_UNSUPPORTED.
+        _write_packet(out, SSH_FXP_VERSION, _pu32(min(client_ver, 3)))
+        while True:
+            typ, data = _read_packet(in_)
+            if typ is None:
+                break
+            try:
+                _dispatch(in_, out, typ, data)
+            except Exception:
+                _log("EXC:", traceback.format_exc())
+                try:
+                    reqid = struct.unpack_from("!I", data, 0)[0] if len(data) >= 4 else 0
+                    _reply_status(out, reqid, SSH_FX_FAILURE, "internal error")
+                except Exception:
+                    pass
+    except Exception:
+        _log("FATAL:", traceback.format_exc())
+        return 1
+    return 0
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# TUI mode
+# ────────────────────────────────────────────────────────────────────────────
+
+def list_adb_devices() -> list[tuple[str, str]]:
+    """Return list of (serial, model) for connected adb devices."""
+    try:
+        r = subprocess.run(["adb", "devices", "-l"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return []
+    devices: list[tuple[str, str]] = []
+    for line in r.stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2 or parts[1] != "device":
+            continue
+        serial = parts[0]
+        model = next((p[6:] for p in parts if p.startswith("model:")), "")
+        devices.append((serial, model))
+    return devices
+
+
+def find_active_mount(mountpoint: str) -> bool:
+    """True if `mountpoint` is currently a fuse.sshfs mount we set up."""
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 9:
+                    continue
+                if parts[4] == mountpoint and parts[8].startswith("fuse"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def default_mountpoint(serial: str) -> str:
+    return str(DEFAULT_MOUNT_BASE / serial)
+
+
+def do_mount(serial: str, mountpoint: str, read_only: bool) -> tuple[bool, str]:
+    """Spawn sshfs against ourselves. Returns (ok, message)."""
+    mp = Path(mountpoint).expanduser()
+    mp.mkdir(parents=True, exist_ok=True)
+    if find_active_mount(str(mp)):
+        return False, f"already mounted at {mp}"
+    ssh_command = f"{shlex.quote(SCRIPT_PATH)} --sftp-server {shlex.quote(serial)}"
+    opts = ["reconnect"]
+    if read_only:
+        opts.append("ro")
+    cmd = [
+        "sshfs", ":/", str(mp),
+        "-o", f"ssh_command={ssh_command}",
+        "-o", ",".join(opts),
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout).strip() or "sshfs failed"
+    return True, str(mp)
+
+
+def do_unmount(mountpoint: str) -> tuple[bool, str]:
+    mp = str(Path(mountpoint).expanduser())
+    if not find_active_mount(mp):
+        return False, f"not mounted: {mp}"
+    r = subprocess.run(["fusermount", "-u", mp], capture_output=True, text=True)
+    if r.returncode != 0:
+        # fall back to lazy unmount
+        r2 = subprocess.run(["fusermount", "-uz", mp], capture_output=True, text=True)
+        if r2.returncode != 0:
+            return False, (r.stderr or r2.stderr).strip() or "fusermount failed"
+    return True, mp
+
+
+def run_tui() -> int:
+    if shutil.which("sshfs") is None:
+        sys.stderr.write("sshfs not found in PATH (apt install sshfs)\n")
+        return 1
+    if shutil.which("adb") is None:
+        sys.stderr.write("adb not found in PATH\n")
+        return 1
+    try:
+        from textual.app import App, ComposeResult
+        from textual.binding import Binding
+        from textual.containers import Vertical
+        from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+    except ImportError:
+        sys.stderr.write("Textual not installed (pip install textual)\n")
+        return 1
+
+    cv_soc = os.environ.get("CV_SOC", "")
+
+    class MountApp(App):
+        CSS = """
+        Screen { background: $surface; }
+        #body { padding: 2 4; }
+        .section { text-style: bold; margin-bottom: 0; margin-top: 1; }
+        ListView {
+            height: auto;
+            max-height: 8;
+            border: round $primary;
+        }
+        ListView:focus { border: round $accent; }
+        #path { width: 100%; }
+        #status { height: 1; padding: 0 2; color: $success; }
+        #status.error { color: $error; }
+        #hint { color: $text-muted; margin-top: 1; }
+        """
+
+        BINDINGS = [
+            # Enter (= Ctrl+M in terminals) toggles based on current state.
+            Binding("enter",  "toggle", "Mount/Unmount"),
+            Binding("ctrl+r", "reload",  "Reload"),
+            Binding("ctrl+q", "quit",    "Quit"),
+            Binding("escape", "quit",    "Quit", show=False),
+        ]
+
+        def compose(self) -> ComposeResult:
+            yield Header()
+            yield Static("", id="status")
+            with Vertical(id="body"):
+                yield Static("Device", classes="section")
+                yield ListView(id="device-list")
+                yield Static("Mountpoint", classes="section")
+                yield Input(placeholder="~/mnt/<serial>", id="path")
+                yield Static("Read-only mode: prefix path with 'ro:' to enable", id="hint")
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.title = "specs-mount-fs"
+            self._populate_devices(initial=True)
+
+        def _populate_devices(self, initial: bool = False) -> None:
+            lv = self.query_one("#device-list", ListView)
+            lv.clear()
+            devices = list_adb_devices()
+            if not devices:
+                lv.append(ListItem(Label("(no adb devices found — Ctrl+R to retry)"), name=""))
+                self._set_status("No devices.", error=True)
+                return
+            preselect = 0
+            for i, (serial, model) in enumerate(devices):
+                mp = default_mountpoint(serial)
+                tag = "  [bold green]● mounted[/bold green]" if find_active_mount(mp) else ""
+                label = f" {serial}  [dim]{model}[/dim]{tag}"
+                lv.append(ListItem(Label(label), name=serial))
+                if cv_soc and serial == cv_soc:
+                    preselect = i
+            lv.index = preselect
+            self._sync_path_input()
+            if initial:
+                lv.focus()
+                self._set_status("Enter to mount/unmount · Ctrl+R reload")
+
+        def _selected_serial(self) -> str:
+            lv = self.query_one("#device-list", ListView)
+            item = lv.highlighted_child
+            if item is None:
+                return ""
+            return getattr(item, "name", "") or ""
+
+        def _sync_path_input(self) -> None:
+            serial = self._selected_serial()
+            if not serial:
+                return
+            inp = self.query_one("#path", Input)
+            inp.value = default_mountpoint(serial)
+
+        def on_list_view_highlighted(self, event) -> None:
+            self._sync_path_input()
+
+        def on_list_view_selected(self, event) -> None:
+            # Enter on the device list → toggle mount/unmount.
+            self.action_toggle()
+
+        def on_input_submitted(self, event) -> None:
+            # Enter on the path input → toggle mount/unmount.
+            self.action_toggle()
+
+        def _set_status(self, msg: str, error: bool = False) -> None:
+            s = self.query_one("#status", Static)
+            s.update(msg)
+            (s.add_class if error else s.remove_class)("error")
+
+        def _resolve_path_field(self) -> tuple[str, bool]:
+            raw = self.query_one("#path", Input).value.strip()
+            ro = False
+            if raw.startswith("ro:"):
+                ro = True
+                raw = raw[3:].strip()
+            if not raw:
+                raw = default_mountpoint(self._selected_serial() or "")
+            return str(Path(raw).expanduser()), ro
+
+        def action_toggle(self) -> None:
+            serial = self._selected_serial()
+            if not serial:
+                self._set_status("Pick a device first.", error=True); return
+            mp, ro = self._resolve_path_field()
+            if not mp:
+                self._set_status("Mountpoint is required.", error=True); return
+            if find_active_mount(mp):
+                ok, info = do_unmount(mp)
+                if ok:
+                    self._set_status(f"Unmounted {info}")
+                else:
+                    self._set_status(f"Unmount: {info}", error=True)
+            else:
+                self._set_status(f"Mounting {serial} → {mp}…")
+                self.refresh()
+                ok, info = do_mount(serial, mp, ro)
+                if ok:
+                    self._set_status(f"Mounted at {info}{' (ro)' if ro else ''}")
+                else:
+                    self._set_status(f"Mount failed: {info}", error=True)
+            self._populate_devices()
+
+        def action_reload(self) -> None:
+            self._populate_devices()
+            self._set_status("Reloaded.")
+
+    MountApp().run()
+    return 0
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ────────────────────────────────────────────────────────────────────────────
+
+HELP = """\
+specs-mount-fs — mount a Spectacles ADB device as a FUSE filesystem.
+
+Usage:
+  specs-mount-fs                          launch TUI
+  specs-mount-fs <serial> [mountpoint]    mount immediately, no TUI
+  specs-mount-fs --sftp-server <serial>   bundled SFTP shim (used as sshfs ssh_command)
+
+Mountpoint defaults to ~/mnt/<serial>. Pre-fix with `ro:` for read-only
+(e.g. `ro:~/mnt/specs-cv`).
+
+Inside the TUI:
+  Enter           Mount selected device, or unmount if already mounted
+  Ctrl+R          Reload device list and mount status
+  Ctrl+Q / Esc    Quit
+
+Unmount from anywhere:
+  fusermount -u <mountpoint>
+"""
+
+
+def main() -> int:
+    args = sys.argv[1:]
+
+    if args and args[0] in ("-h", "--help"):
+        sys.stdout.write(HELP); return 0
+
+    if args and args[0] == "--sftp-server":
+        if len(args) < 2:
+            sys.stderr.write("usage: --sftp-server SERIAL\n")
+            return 1
+        return run_sftp_server(args[1])
+
+    if args and not args[0].startswith("-"):
+        # one-shot mount: serial [mountpoint]
+        serial = args[0]
+        raw = args[1] if len(args) > 1 else default_mountpoint(serial)
+        ro = False
+        if raw.startswith("ro:"):
+            ro = True
+            raw = raw[3:]
+        mp = str(Path(raw).expanduser())
+        ok, info = do_mount(serial, mp, ro)
+        if ok:
+            print(f"Mounted at {info}{' (ro)' if ro else ''}")
+            return 0
+        sys.stderr.write(f"Mount failed: {info}\n")
+        return 1
+
+    return run_tui()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
