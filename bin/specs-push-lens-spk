@@ -1,0 +1,63 @@
+#!/bin/bash -x
+set -e
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  cat <<'EOF'
+specs-push-lens-spk — Push and install a .spk package on a device via adb
+
+Usage:
+  specs-push-lens-spk <package.spk> [name]
+
+Arguments:
+  package.spk  Path to the .spk file to install.
+  name         Package name to install under (defaults to filename without .spk).
+
+Environment:
+  APP   ADB serial of the target device. Auto-detected from the first
+        connected device if not set.
+
+Examples:
+  specs-push-lens-spk ./MyLens.spk
+  specs-push-lens-spk ./MyLens.spk custom-name
+  APP=41201B1X35010011_app specs-push-lens-spk ./MyLens.spk
+EOF
+  exit 0
+fi
+
+if [ -z "$1" ]; then
+  echo "Usage: $0 spk-file [name]"
+  echo "Please pass path to .spk file as a parameter"
+  exit 1
+fi
+
+SPK_PATH="$1"
+SPK_BASENAME="${SPK_PATH##*/}"
+SPK_NAME="${SPK_BASENAME%.spk}"
+
+if [ -n "$2" ]; then
+  NAME="$2"
+else
+  NAME="$SPK_NAME"
+fi
+
+if [ ! -f "$SPK_PATH" ]; then
+  echo "Error: File $SPK_PATH not found"
+  exit 1
+fi
+
+# Allow APP to be set externally, otherwise detect it automatically
+if [ -z "$APP" ]; then
+  APP=$(adb devices | tail -n +2 | grep -v '^$' | head -n 1 | cut -f 1)
+
+  if [ -z "$APP" ]; then
+    echo "Error: No device found"
+    exit 1
+  fi
+
+  echo "Auto-detected device: $APP"
+else
+  echo "Using device: $APP"
+fi
+
+adb -s $APP push "$SPK_PATH" /data/local/$SPK_BASENAME
+adb -s $APP shell pkg install --packageFormat SPK --filePath /data/local/$SPK_BASENAME --name "$NAME"

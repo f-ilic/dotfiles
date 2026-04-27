@@ -1,0 +1,95 @@
+#!/bin/bash -x
+set -e
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  cat <<'EOF'
+specs-push-lens — Push a lens folder or .zip to an Android device via adb
+
+Usage:
+  specs-push-lens <lens-folder|lens.zip> [lens-name] [adb-serial]
+
+Arguments:
+  lens-folder|lens.zip  Path to the lens directory or a zipped lens.
+  lens-name             Name to install the lens under (defaults to folder/zip name).
+  adb-serial            ADB device serial. Prefix with _ to match by suffix
+                        (e.g. _cv). Defaults to the first connected device.
+
+Examples:
+  specs-push-lens ./MyLens
+  specs-push-lens ./MyLens.zip my-lens 41201B1X35010011_app
+  specs-push-lens ./MyLens "" _cv
+EOF
+  exit 0
+fi
+
+if [ -z "$1" ]; then
+  echo "Please pass path to lens folder as a parameter"
+  exit 1
+fi
+LENS_DIR=$1
+LENS_PATH=$(echo "$LENS_DIR" | sed 's:/*$::')
+
+LENS_NAME="$2"
+
+# Default to first connected ADB device
+if [[ "$3" == "" ]]; then
+  ADB_DEVICE=$(adb devices | tail -n +1 | head -n 2 | cut -sf 1)
+elif [[ "$3" == _* ]]; then
+  ADB_DEVICE=$(adb devices | grep "$3" | cut -sf 1)
+else
+  # User specified which device they want to use
+  ADB_DEVICE="$3"
+fi
+
+SAVEIFS=$IFS
+IFS=$'\n'
+IFS=$SAVEIFS
+
+push_lens() {
+  local lensName="$1"
+  local sourcePath="$2"
+  local lensesPath="/sdcard/hermosa/lenses"
+  local lensesTempDir="$lensesPath/tmp"
+  local lensesTempPath="$lensesTempDir/$lensName"
+  local targetPath="$lensesPath/$lensName/"
+
+  echo "Push lens $lensName from $sourcePath to $targetPath"
+
+  echo "Clear and create directories"
+  adb -s $ADB_DEVICE shell -- rm -rf "${targetPath}"
+  adb -s $ADB_DEVICE shell -- rm -rf "$lensesTempPath/*"
+  adb -s $ADB_DEVICE shell -- mkdir -p "$targetPath"
+  adb -s $ADB_DEVICE shell -- mkdir -p "$lensesTempPath"
+
+  echo "Push source $sourcePath to $lensesTempPath"
+  adb -s $ADB_DEVICE push "$sourcePath" "$lensesTempPath"
+
+  echo "Copy $lensesTempPath to $targetPath"
+  adb -s $ADB_DEVICE shell "cd '$lensesTempPath/${sourcePath##*/}/' && mv -v * '$targetPath'"
+
+  echo "Remove the tmp dir $lensesTempDir"
+  adb -s $ADB_DEVICE shell -- rm -rf "$lensesTempDir"
+}
+
+if [[ -d $LENS_PATH ]]; then
+  if [[ -z $LENS_NAME ]]; then
+    LENS_NAME="${LENS_PATH##*/}"
+  fi
+  push_lens "$LENS_NAME" "$LENS_PATH"
+elif [[ $LENS_PATH == *.zip ]]; then
+  lensFileName="${LENS_PATH##*/}"
+  unzipDir="${lensFileName%.*}"
+  if [[ -z $LENS_NAME ]]; then
+    LENS_NAME="$unzipDir"
+  fi
+  sourceDir=$(dirname "${LENS_PATH}")/tmp
+  echo "unpack $LENS_PATH to $sourceDir"
+  unzip -o "$LENS_PATH" -d "$sourceDir"
+  if [[ $? != 0 ]]; then
+    echo "Lens was not unpacked"
+    exit 4
+  fi
+  push_lens "$LENS_NAME" "$sourceDir"
+  echo "remove temp dir $sourceDir"
+  rm -r "$sourceDir"
+fi

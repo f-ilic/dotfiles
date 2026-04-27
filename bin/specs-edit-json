@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""
+TUI JSON config editor with adb push.
+
+Usage:
+    tui_config_push.py [device_path] [device_serial]
+
+    If device_path is omitted, a prompt is shown on launch.
+    device_serial defaults to $CV_SOC.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from typing import Any, Generator
+
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+
+
+# ── JSON helpers ──────────────────────────────────────────────────────────────
+
+def coerce(original: Any, new_str: str) -> Any:
+    if isinstance(original, bool):
+        return new_str.strip().lower() in ("true", "1", "yes")
+    if isinstance(original, int):
+        try:
+            return int(new_str)
+        except ValueError:
+            return new_str
+    if isinstance(original, float):
+        try:
+            return float(new_str)
+        except ValueError:
+            return new_str
+    return new_str
+
+
+def set_by_path(data: Any, path: list, value: Any) -> None:
+    obj = data
+    for tok in path[:-1]:
+        obj = obj[tok]
+    obj[path[-1]] = value
+
+
+# ── Row widgets ───────────────────────────────────────────────────────────────
+
+INDENT = 2  # spaces per depth level
+
+class SectionRow(Static):
+    DEFAULT_CSS = """
+    SectionRow {
+        height: 1;
+        color: $text;
+        text-style: bold;
+    }
+    """
+    def __init__(self, label: str, depth: int) -> None:
+        indent = " " * (depth * INDENT)
+        super().__init__(f"{indent}{label}")
+
+
+class FieldRow(Horizontal):
+    DEFAULT_CSS = """
+    FieldRow {
+        height: 1;
+    }
+    FieldRow:focus-within {
+        background: $boost;
+    }
+    FieldRow Label {
+        color: $text-muted;
+    }
+    FieldRow Input {
+        height: 1;
+        border: none;
+        background: transparent;
+        padding: 0;
+        width: 1fr;
+    }
+    FieldRow Input:focus {
+        background: transparent;
+        border: none;
+    }
+    """
+
+    def __init__(self, label: str, value: Any, depth: int, path: list) -> None:
+        super().__init__()
+        self._label = label
+        self._value = value
+        self._depth = depth
+        self._path = path
+        self.can_focus = False  # row itself not focusable, only the input inside
+
+    def compose(self) -> ComposeResult:
+        indent = " " * (self._depth * INDENT)
+        yield Label(f"{indent}{self._label}", markup=False)
+        yield Input(value=str(self._value))
+
+    @property
+    def path(self) -> list:
+        return self._path
+
+    @property
+    def original_value(self) -> Any:
+        return self._value
+
+    @property
+    def input_value(self) -> str:
+        return self.query_one(Input).value
+
+    def focus_input(self) -> None:
+        self.query_one(Input).focus()
+
+
+# ── Tree traversal ────────────────────────────────────────────────────────────
+
+def iter_rows(data: Any, depth: int = 0, path: list | None = None) -> Generator:
+    if path is None:
+        path = []
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, (dict, list)):
+                yield SectionRow(f"{k}", depth)
+                yield from iter_rows(v, depth + 1, path + [k])
+            else:
+                yield FieldRow(f"{k}", v, depth, path + [k])
+    elif isinstance(data, list):
+        for i, v in enumerate(data):
+            if isinstance(v, (dict, list)):
+                yield SectionRow(f"[{i}]", depth)
+                yield from iter_rows(v, depth + 1, path + [i])
+            else:
+                yield FieldRow(f"[{i}]", v, depth, path + [i])
+
+
+# ── Known configs ─────────────────────────────────────────────────────────────
+
+KNOWN_CONFIGS: list[tuple[str, str]] = [
+    ("Activity", "/usr/share/vos-context-cues/assets/activity.json"),
+]
+
+
+def get_adb_devices() -> list[tuple[str, str]]:
+    """Return list of (serial, display_label) for connected adb devices."""
+    try:
+        r = subprocess.run(["adb", "devices", "-l"], capture_output=True, text=True)
+        devices = []
+        for line in r.stdout.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 2 or parts[1] != "device":
+                continue
+            serial = parts[0]
+            model = next((p[6:] for p in parts if p.startswith("model:")), "")
+            label = f"{serial}  [dim]{model}[/dim]" if model else serial
+            devices.append((serial, label))
+        return devices
+    except Exception:
+        return []
+
+
+# ── Home screen ───────────────────────────────────────────────────────────────
+
+class HomeScreen(Vertical):
+    DEFAULT_CSS = """
+    HomeScreen {
+        padding: 2 4;
+    }
+    HomeScreen .section-title {
+        text-style: bold;
+        margin-bottom: 0;
+        margin-top: 1;
+    }
+    HomeScreen ListView {
+        height: auto;
+        max-height: 8;
+        border: round $primary;
+        margin-bottom: 0;
+    }
+    HomeScreen ListView:focus {
+        border: round $accent;
+    }
+    HomeScreen #custom-label {
+        color: $text-muted;
+        margin-top: 1;
+        margin-bottom: 0;
+    }
+    HomeScreen #path-input {
+        width: 100%;
+    }
+    HomeScreen #no-devices {
+        color: $error;
+        margin-bottom: 1;
+    }
+    """
+
+    def __init__(self, preset_serial: str = "") -> None:
+        super().__init__()
+        self._preset_serial = preset_serial
+
+    def compose(self) -> ComposeResult:
+        devices = get_adb_devices()
+        yield Static("Device", classes="section-title")
+        if devices:
+            items = [ListItem(Label(f" {label}"), name=serial) for serial, label in devices]
+            yield ListView(*items, id="device-list")
+        else:
+            yield Static("No ADB devices found — connect a device and reload (Ctrl+R)", id="no-devices")
+            yield ListView(id="device-list")
+
+        yield Static("Config", classes="section-title")
+        yield ListView(
+            *[ListItem(Label(f" {name}  [dim]{path}[/dim]"), name=path) for name, path in KNOWN_CONFIGS],
+            id="config-list",
+        )
+        yield Static("or enter a custom path:", id="custom-label")
+        yield Input(placeholder="/usr/share/…/config.json", id="path-input")
+
+    def on_mount(self) -> None:
+        device_list = self.query_one("#device-list", ListView)
+        # pre-select $CV_SOC / passed serial if present
+        if self._preset_serial:
+            for i, item in enumerate(device_list._nodes):
+                if getattr(item, "name", "") == self._preset_serial:
+                    device_list.index = i
+                    break
+        device_list.focus()
+
+    def selected_serial(self) -> str:
+        device_list = self.query_one("#device-list", ListView)
+        highlighted = device_list.highlighted_child
+        if highlighted:
+            return highlighted.name or ""
+        return ""
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
+
+class ConfigEditor(App):
+    CSS = """
+    Screen { background: $surface; }
+    #scroll { padding: 0 1; }
+    #status { height: 1; padding: 0 2; color: $success; }
+    #status.error { color: $error; }
+    FieldRow Label { width: 40%; }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+s", "push", "Push"),
+        Binding("ctrl+r", "reload", "Reload"),
+        Binding("ctrl+b", "back", "Back"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("down",   "next_field", "Next field",  show=False),
+        Binding("up",     "prev_field", "Prev field",  show=False),
+    ]
+
+    def __init__(self, device_path: str, serial: str) -> None:
+        super().__init__()
+        self.device_path = device_path
+        self.serial = serial
+        self.original: Any = {}
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static("", id="status")
+        if self.device_path and self.serial:
+            yield ScrollableContainer(id="scroll")
+        else:
+            yield HomeScreen(preset_serial=self.serial)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = f"{self.serial}:{self.device_path}" if self.device_path else "specs-edit-json"
+        if self.device_path and self.serial:
+            self._load_from_device()
+
+    def _open_path(self, path: str, serial: str) -> None:
+        self.device_path = path
+        self.serial = serial
+        self.title = f"{self.serial}:{self.device_path}"
+        self.query_one(HomeScreen).remove()
+        self.mount(ScrollableContainer(id="scroll"), before=self.query_one(Footer))
+        self._load_from_device()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == "config-list":
+            home = self.query_one(HomeScreen)
+            serial = home.selected_serial()
+            if not serial:
+                self._set_status("Select a device first.", error=True)
+                return
+            self._open_path(event.item.name, serial)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "path-input" and event.value.strip():
+            home = self.query_one(HomeScreen)
+            serial = home.selected_serial()
+            if not serial:
+                self._set_status("Select a device first.", error=True)
+                return
+            self._open_path(event.value.strip(), serial)
+
+    def action_reload(self) -> None:
+        if not self.device_path:
+            # on home screen — refresh device list
+            home = self.query_one(HomeScreen)
+            home.remove()
+            self.mount(HomeScreen(preset_serial=self.serial), before=self.query_one(Footer))
+            return
+        self._set_status("Reloading…")
+        self._load_from_device()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            event.stop()
+            if self.device_path:
+                self.action_back()
+            else:
+                self.exit()
+
+    def action_back(self) -> None:
+        if not self.device_path:
+            return  # already on home screen
+        scroll = self.query_one("#scroll", ScrollableContainer)
+        scroll.remove()
+        self.device_path = ""
+        self.title = "specs-edit-json"
+        self.mount(HomeScreen(preset_serial=self.serial), before=self.query_one(Footer))
+        self._set_status("")
+
+    # ── data ──────────────────────────────────────────────────────────────────
+
+    def _load_from_device(self) -> None:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                tmp_path = tmp.name
+            r = subprocess.run(
+                ["adb", "-s", self.serial, "pull", self.device_path, tmp_path],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                self._set_status(f"adb pull failed: {r.stderr.strip()}", error=True)
+                return
+            with open(tmp_path) as f:
+                self.original = json.load(f)
+            os.unlink(tmp_path)
+        except Exception as e:
+            self._set_status(f"Load error: {e}", error=True)
+            return
+
+        self._rebuild_fields()
+        field_count = sum(1 for r in self.query(FieldRow))
+        self._set_status(f"Loaded · {field_count} editable fields · Ctrl+S push · Ctrl+R reload")
+
+    def _rebuild_fields(self) -> None:
+        scroll = self.query_one("#scroll", ScrollableContainer)
+        scroll.remove_children()
+        for row in iter_rows(self.original):
+            scroll.mount(row)
+        # defer focus until children are composed
+        self.call_after_refresh(self._focus_first)
+
+    def _focus_first(self) -> None:
+        fields = list(self.query(FieldRow))
+        if fields:
+            fields[0].focus_input()
+
+    # ── navigation ────────────────────────────────────────────────────────────
+
+    def _field_rows(self) -> list[FieldRow]:
+        return list(self.query(FieldRow))
+
+    def _focused_field_index(self) -> int:
+        focused = self.focused
+        for i, row in enumerate(self._field_rows()):
+            try:
+                if row.query_one(Input) is focused:
+                    return i
+            except Exception:
+                pass
+        return -1
+
+    def action_next_field(self) -> None:
+        rows = self._field_rows()
+        i = self._focused_field_index()
+        if rows and i < len(rows) - 1:
+            rows[i + 1].focus_input()
+            rows[i + 1].scroll_visible()
+
+    def action_prev_field(self) -> None:
+        rows = self._field_rows()
+        i = self._focused_field_index()
+        if rows and i > 0:
+            rows[i - 1].focus_input()
+            rows[i - 1].scroll_visible()
+
+    # ── status ────────────────────────────────────────────────────────────────
+
+    def _set_status(self, msg: str, error: bool = False) -> None:
+        s = self.query_one("#status", Static)
+        s.update(msg)
+        if error:
+            s.add_class("error")
+        else:
+            s.remove_class("error")
+
+    # ── push ──────────────────────────────────────────────────────────────────
+
+    def action_push(self) -> None:
+        if not self.device_path:
+            return
+        data = json.loads(json.dumps(self.original))
+        for row in self.query(FieldRow):
+            set_by_path(data, row.path, coerce(row.original_value, row.input_value))
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+                json.dump(data, tmp, indent=2)
+                tmp_path = tmp.name
+            r = subprocess.run(
+                ["adb", "-s", self.serial, "push", tmp_path, self.device_path],
+                capture_output=True, text=True,
+            )
+            os.unlink(tmp_path)
+            if r.returncode != 0:
+                self._set_status(f"Push failed: {r.stderr.strip()}", error=True)
+            else:
+                self.original = data
+                self._set_status("Pushed. Restart the lens to apply.")
+        except Exception as e:
+            self._set_status(f"Error: {e}", error=True)
+
+HELP = """\
+specs-edit-json — TUI JSON config editor with adb push
+
+Usage:
+  specs-edit-json [device_path] [device_serial]
+
+Arguments:
+  device_path     Path to the JSON file on the device (optional).
+                  If omitted, the home screen lets you pick from known
+                  configs or type a custom path.
+  device_serial   ADB serial of the target device (optional).
+                  Defaults to $CV_SOC if set.
+
+Navigation:
+  ↑ / ↓          Move between editable fields
+  Enter           Confirm a custom path on the home screen
+  Esc             Go back to home screen; quit from home screen
+
+Actions:
+  Ctrl+S          Push current edits to the device
+  Ctrl+R          Reload config from device (or refresh device list)
+  Ctrl+B          Back to home screen
+  Ctrl+Q          Quit
+
+Known configs (selectable from home screen):
+  Activity        /usr/share/vos-context-cues/assets/activity.json
+
+Examples:
+  specs-edit-json
+  specs-edit-json /usr/share/vos-context-cues/assets/activity.json
+  specs-edit-json /usr/share/foo/config.json 41201B1X35010011_cv
+"""
+
+
+def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(HELP)
+        sys.exit(0)
+    device_path = sys.argv[1] if len(sys.argv) > 1 else ""
+    serial = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("CV_SOC", "")
+    ConfigEditor(device_path=device_path, serial=serial).run()
+
+
+if __name__ == "__main__":
+    main()

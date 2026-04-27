@@ -1,0 +1,94 @@
+#!/bin/bash -x
+set -ex
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  cat <<'EOF'
+specs-push-lens-linux — Push one or more .lns lenses to a linux-based device
+
+Usage:
+  specs-push-lens-linux <lens1.lns> [lens2.lns ...]
+
+Arguments:
+  lens.lns  One or more paths to .lns lens files.
+
+Environment:
+  APP_SOC   ADB serial of the app-side device. Auto-detected from
+            `adb devices` (first device matching "app") if not set.
+
+Examples:
+  specs-push-lens-linux ./MyLens.lns
+  APP_SOC=41201B1X35010011_app specs-push-lens-linux a.lns b.lns
+EOF
+  exit 0
+fi
+
+push_lens() {
+  local LENS_PATH="$1"
+  
+  if [ -z "$LENS_PATH" -o "${LENS_PATH##*.}" != "lns" ]; then
+    echo "Error: $LENS_PATH is not a valid .lns file"
+    return 1
+  fi
+
+  if [ ! -f "$LENS_PATH" ]; then
+    echo "Error: File $LENS_PATH not found"
+    return 1
+  fi
+
+  local LENS_BASENAME="${LENS_PATH##*/}"
+  local LENS_NAME="${LENS_BASENAME%.lns}"
+
+  echo "Processing lens: $LENS_NAME"
+
+  local OPERATION=install
+
+  adb -s $APP_SOC wait-for-device
+  if adb -s $APP_SOC shell "pkg list | grep 'name: \"$LENS_NAME\"'"; then
+    OPERATION=update
+  fi
+
+  adb -s $APP_SOC root
+  adb -s $APP_SOC shell "app stop --appId $LENS_NAME --appType LENS" 2>/dev/null || :
+  adb -s $APP_SOC push "$LENS_PATH" "/data/local/tmp/$LENS_BASENAME"
+  adb -s $APP_SOC shell "pkg $OPERATION --packageFormat LNS --filePath \"/data/local/tmp/$LENS_BASENAME\" --name \"$LENS_NAME\" --packageIdentifier \"$LENS_NAME\""
+  adb -s $APP_SOC shell "rm /data/local/tmp/$LENS_BASENAME"
+
+  echo "Successfully processed lens: $LENS_NAME"
+}
+
+# Main script flow
+if [ $# -eq 0 ]; then
+  echo "Usage: $0 lens1.lns lens2.lns [lens3.lns ...]"
+  echo "Please pass one or more paths to .lns files as parameters"
+  exit 1
+fi
+
+# Get device info once at the beginning
+# Allow APP_SOC to be set externally, otherwise detect it automatically
+if [ -z "$APP_SOC" ]; then
+  APP_SOC=`adb devices | grep -e app | awk '{print $1}'`
+  
+  if [ -z "$APP_SOC" ]; then
+    echo "Error: No device found"
+    exit 1
+  fi
+  
+  echo "Auto-detected device: $APP_SOC"
+else
+  echo "Using device: $APP_SOC"
+fi
+
+# Process each lens file
+for lens_file in "$@"; do
+  echo "=========================================="
+  push_lens "$lens_file"
+  if [ $? -ne 0 ]; then
+    echo "Failed to process lens: $lens_file"
+    exit 1
+  fi
+done
+
+echo "=========================================="
+echo "All lenses processed successfully."
+echo ""
+echo "If the lens updates are not appearing, consider rebooting your device."

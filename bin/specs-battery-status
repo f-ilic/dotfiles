@@ -1,0 +1,46 @@
+#!/bin/zsh
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  cat <<'EOF'
+specs-battery-status — Show battery level for all connected NRF devices
+
+Usage:
+  specs-battery-status
+
+Output:
+  One line per device: <serial>  L: <left>%  R: <right>%
+
+Requirements:
+  nrf-shell Python package must be installed (pipx venv at
+  ~/.local/pipx/venvs/nrf-shell).
+EOF
+  exit 0
+fi
+
+python=/Users/filic/.local/pipx/venvs/nrf-shell/bin/python
+
+nrf_ports=$("$python" - <<'PYEOF'
+from nrf_shell.serial_stream.uart_device_finder.platform_uart_device_finder import comports
+
+ports = [p for p in comports() if p.description and p.description != 'n/a' and p.location]
+ports = sorted(ports, key=lambda p: (p.location, p.device))
+nrf_ports = [p for p in ports if p.interface and 'NRF Serial Port' in p.interface]
+
+for p in nrf_ports:
+    serial = (p.serial_number or 'unknown')[-12:]
+    print(f"{serial}  {p.device}")
+PYEOF
+)
+
+if [[ -z "$nrf_ports" ]]; then
+  echo "No devices found" >&2
+  exit 1
+fi
+
+echo "$nrf_ports" | while IFS= read -r line; do
+  id=$(echo "$line" | awk '{print $1}')
+  uart=$(echo "$line" | awk '{print $2}')
+  result=$(printf "battery_status new\nexit\n" | nrf_shell --uart "$uart" 2>/dev/null \
+    | awk '/^l_soc:/ { l=$2 } /^r_soc:/ { r=$2 } END { printf "L: %s%%  R: %s%%\n", l, r }')
+  echo "$id  $result"
+done
