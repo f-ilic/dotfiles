@@ -1,4 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "textual>=0.50",
+# ]
+# ///
 """specs-mount-fs — mount a Spectacles ADB device as a FUSE filesystem.
 
 Default mode launches a Textual TUI to pick a device + mountpoint and runs
