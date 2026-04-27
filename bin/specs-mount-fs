@@ -603,15 +603,25 @@ def list_adb_devices() -> list[tuple[str, str]]:
 
 
 def find_active_mount(mountpoint: str) -> bool:
-    """True if `mountpoint` is currently a fuse.sshfs mount we set up."""
+    """True if `mountpoint` is currently a FUSE mount we set up."""
+    mp = str(Path(mountpoint).expanduser())
+    # Linux
     try:
         with open("/proc/self/mountinfo") as f:
             for line in f:
                 parts = line.split()
                 if len(parts) < 9:
                     continue
-                if parts[4] == mountpoint and parts[8].startswith("fuse"):
+                if parts[4] == mp and parts[8].startswith("fuse"):
                     return True
+    except OSError:
+        pass
+    # macOS
+    try:
+        r = subprocess.run(["mount"], capture_output=True, text=True)
+        for line in r.stdout.splitlines():
+            if f" on {mp} (" in line and "fuse" in line.lower():
+                return True
     except OSError:
         pass
     return False
@@ -646,12 +656,14 @@ def do_unmount(mountpoint: str) -> tuple[bool, str]:
     mp = str(Path(mountpoint).expanduser())
     if not find_active_mount(mp):
         return False, f"not mounted: {mp}"
-    r = subprocess.run(["fusermount", "-u", mp], capture_output=True, text=True)
+    if shutil.which("fusermount"):
+        r = subprocess.run(["fusermount", "-u", mp], capture_output=True, text=True)
+        if r.returncode != 0:
+            r = subprocess.run(["fusermount", "-uz", mp], capture_output=True, text=True)
+    else:
+        r = subprocess.run(["umount", mp], capture_output=True, text=True)
     if r.returncode != 0:
-        # fall back to lazy unmount
-        r2 = subprocess.run(["fusermount", "-uz", mp], capture_output=True, text=True)
-        if r2.returncode != 0:
-            return False, (r.stderr or r2.stderr).strip() or "fusermount failed"
+        return False, r.stderr.strip() or "umount failed"
     return True, mp
 
 
@@ -750,7 +762,10 @@ def run_tui() -> int:
             inp.value = default_mountpoint(serial)
 
         def on_list_view_highlighted(self, event) -> None:
-            self._sync_path_input()
+            if event.item is not None:
+                serial = getattr(event.item, "name", "") or ""
+                if serial:
+                    self.query_one("#path", Input).value = default_mountpoint(serial)
 
         def on_list_view_selected(self, event) -> None:
             # Enter on the device list → toggle mount/unmount.
