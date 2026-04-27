@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+specs-remount — Make device filesystem writable via adb
+
+Usage:
+  specs-remount [device_serial]
+
+Arguments:
+  device_serial  ADB serial of the target device (optional).
+                 Defaults to $CV_SOC if set.
+
+Steps performed:
+  1. adb root           — restart adbd as root
+  2. adb disable-verity — disable dm-verity (skipped if already disabled)
+  3. adb reboot         — reboot device (only if verity was just disabled)
+  4. wait-for-device    — wait for device to come back online
+  5. adb root           — restart adbd as root again
+  6. adb remount        — remount filesystems read-write
+
+After this you can push files to /system, /usr/share, etc.
+
+Examples:
+  specs-remount
+  specs-remount 41201B1X35010011_cv
+EOF
+  exit 0
+fi
+
+SERIAL="${1:-${CV_SOC:-}}"
+
+if [[ -z "$SERIAL" ]]; then
+  # Parse connected devices
+  devices=()
+  while IFS= read -r serial; do
+    devices+=("$serial")
+  done < <(adb devices -l | awk 'NR>1 && $2=="device" {print $1}')
+
+  if [[ ${#devices[@]} -eq 0 ]]; then
+    echo "Error: no ADB devices connected." >&2
+    exit 1
+  elif [[ ${#devices[@]} -eq 1 ]]; then
+    SERIAL="${devices[0]}"
+  else
+    echo "Multiple devices connected — pick one:"
+    for i in "${!devices[@]}"; do
+      echo "  $((i+1))) ${devices[$i]}"
+    done
+    printf "Device [1-%d]: " "${#devices[@]}"
+    read -r choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#devices[@]} )); then
+      echo "Error: invalid selection." >&2
+      exit 1
+    fi
+    SERIAL="${devices[$((choice-1))]}"
+  fi
+fi
+
+ADB="adb -s $SERIAL"
+
+echo "[$SERIAL] Enabling root..."
+$ADB root
+sleep 1
+
+echo "[$SERIAL] Disabling verity..."
+verity_out=$($ADB disable-verity 2>&1 || true)
+echo "$verity_out"
+
+if echo "$verity_out" | grep -qi "already disabled"; then
+  echo "[$SERIAL] Verity already disabled — skipping reboot."
+else
+  echo "[$SERIAL] Rebooting..."
+  $ADB reboot
+  echo "[$SERIAL] Waiting for device..."
+  $ADB wait-for-device
+  sleep 3
+  echo "[$SERIAL] Enabling root after reboot..."
+  $ADB root
+  sleep 1
+fi
+
+echo "[$SERIAL] Remounting..."
+$ADB remount
+
+echo ""
+echo "[$SERIAL] Done — filesystem is writable."
