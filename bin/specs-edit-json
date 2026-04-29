@@ -1,13 +1,11 @@
-#!/usr/bin/env python3
-"""
-TUI JSON config editor with adb push.
-
-Usage:
-    tui_config_push.py [device_path] [device_serial]
-
-    If device_path is omitted, a prompt is shown on launch.
-    device_serial defaults to $CV_SOC.
-"""
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "textual>=0.50",
+# ]
+# ///
+"""TUI JSON config editor with adb push."""
 
 import json
 import os

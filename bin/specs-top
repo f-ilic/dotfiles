@@ -1,0 +1,724 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "textual>=0.50",
+# ]
+# ///
+"""
+specs-top — Interactive device power monitor.
+
+Polls 'nrf_shell --commands "ina231_dump --board <BOARD>"' and displays a
+live, scrolling power graph with click-drag region selection.
+
+Usage:
+    conda run -n ml python stinson-top.py [--board ar2] [--interval 1.0] [--log]
+
+Keys:
+    q / Ctrl+C   Quit
+    p            Pause / Resume polling
+    c / Esc      Clear graph selection
+    r            Reset all collected data
+    1            Graph: Power (mW)
+    2            Graph: Current (mA)
+    3            Graph: Voltage (mV)
+"""
+
+import argparse
+import csv
+import re
+import subprocess
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Set
+
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal
+from textual.message import Message
+from textual.widget import Widget
+from textual.widgets import Footer, Select, Static
+from textual import events
+from rich.text import Text
+
+# ── constants ─────────────────────────────────────────────────────────────────
+
+MAX_SAMPLES = 2000          # circular buffer depth
+Y_AXIS_COLS = 9             # chars reserved for y-axis (label + "┤")
+BLOCKS = " ▁▂▃▄▅▆▇█"       # ⅛-block characters (index 0..8)
+
+METRIC_INFO = {
+    "power_mw":   ("Power",   "mW",  "bright_cyan"),
+    "current_ma": ("Current", "mA",  "bright_green"),
+    "voltage_mv": ("Voltage", "mV",  "bright_magenta"),
+}
+
+# ── data model ────────────────────────────────────────────────────────────────
+
+@dataclass
+class Reading:
+    timestamp: float
+    power_mw: float
+    voltage_mv: float
+    current_ma: float
+
+
+def fetch_reading(board: str) -> Optional[Reading]:
+    """Run nrf_shell and parse one INA231 reading. Returns None on failure."""
+    try:
+        r = subprocess.run(
+            ["nrf_shell", "--commands", f"ina231_dump --board {board}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        out = r.stdout
+        vm = re.search(r"bus_voltage_mV:\s*([\d.]+)", out)
+        pm = re.search(r"power_mW:\s*([\d.]+)", out)
+        cm = re.search(r"current_mA:\s*([\d.]+)", out)
+        if vm and pm and cm:
+            return Reading(
+                timestamp=time.time(),
+                power_mw=float(pm.group(1)),
+                voltage_mv=float(vm.group(1)),
+                current_ma=float(cm.group(1)),
+            )
+    except Exception:
+        pass
+    return None
+
+
+# ── background poller ─────────────────────────────────────────────────────────
+
+def _poll_loop(board_ref: list, interval: float, callback) -> None:
+    """Runs in a daemon thread. Calls callback(reading) for each fresh reading."""
+    while True:
+        t0 = time.monotonic()
+        reading = fetch_reading(board_ref[0])
+        if reading is not None:
+            callback(reading)
+        elapsed = time.monotonic() - t0
+        time.sleep(max(0.0, interval - elapsed))
+
+
+# ── graph rendering ───────────────────────────────────────────────────────────
+
+def _fmt_y(val: float, unit: str) -> str:
+    """Format a y-axis value into at most 7 chars."""
+    if unit in ("mW", "mA"):
+        if val >= 10_000:
+            return f"{val / 1000:.1f}W" if unit == "mW" else f"{val / 1000:.1f}A"
+        return f"{val:.0f}{unit}"
+    if unit == "mV":
+        if val >= 1000:
+            return f"{val / 1000:.3f}V"
+        return f"{val:.0f}mV"
+    return f"{val:.1f}"
+
+
+def _fmt_ago(seconds: float) -> str:
+    s = int(abs(seconds))
+    if s < 60:
+        return f"-{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"-{m}m" if s == 0 else f"-{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"-{h}h{m:02d}m" if m else f"-{h}h"
+
+
+def make_graph(
+    readings: List[Reading],
+    width: int,
+    height: int,
+    metric: str = "power_mw",
+    sel_start: Optional[int] = None,
+    sel_end: Optional[int] = None,
+    hover_col: Optional[int] = None,
+    zoom: int = 1,
+) -> Text:
+    """
+    Render a filled-area graph with y-axis into a Rich Text of (width × height)
+    characters.  The last row is an x-axis with time labels.
+
+    zoom: readings per column. Each column shows the mean of its group.
+    Columns with no actual readings are left blank (no zero-mixing at borders).
+    """
+    text = Text(no_wrap=True, overflow="crop")
+    _, unit, base_color = METRIC_INFO[metric]
+
+    graph_w = width - Y_AXIS_COLS
+    if graph_w < 2 or height < 3 or not readings:
+        text.append("  Waiting for data…", style="dim italic")
+        return text
+
+    values     = [getattr(r, metric) for r in readings]
+    timestamps = [r.timestamp for r in readings]
+    n          = len(values)
+
+    # Scale based on all readings ever seen — keeps the y-axis stable.
+    max_v = max(max(values) * 1.15, 1.0)
+
+    # ── build per-column display values ────────────────────────────────────────
+    # Group readings by ABSOLUTE index: group g covers readings[g*zoom:(g+1)*zoom].
+    # Complete groups (all zoom readings arrived) never change their average.
+    # Only the rightmost in-progress group updates as new readings arrive.
+    # This prevents every column from jumping on every new sample.
+    num_groups  = (n + zoom - 1) // zoom   # ceil(n / zoom)
+    first_group = max(0, num_groups - graph_w)
+    num_vis     = num_groups - first_group  # ≤ graph_w
+    pad_left    = graph_w - num_vis
+
+    disp_vals: List[Optional[float]] = [None] * pad_left
+    disp_ts:   List[Optional[float]] = [None] * pad_left
+    for g_idx in range(num_vis):
+        g  = first_group + g_idx
+        gs = g * zoom
+        ge = min((g + 1) * zoom, n)
+        disp_vals.append(sum(values[gs:ge]) / (ge - gs))
+        disp_ts.append(timestamps[ge - 1])
+
+    sel_set: Set[int] = set()
+    if sel_start is not None and sel_end is not None:
+        s, e = sorted([sel_start, sel_end])
+        sel_set = set(range(max(0, s), min(graph_w, e + 1)))
+
+    data_rows = height - 1  # last row is x-axis
+    tick_rows: Set[int] = set()
+    for i in range(5):
+        tick_rows.add(round(i * (data_rows - 1) / 4))
+
+    # ── draw rows ──────────────────────────────────────────────────────────────
+    for row in range(height):
+        is_xaxis = (row == height - 1)
+
+        if is_xaxis:
+            # ── x-axis ──────────────────────────────────────────────────────
+            text.append(" " * (Y_AXIS_COLS - 1) + "└", style="dim")
+
+            axis   = list("─" * graph_w)
+            col_ts = [(col, t) for col, t in enumerate(disp_ts) if t is not None]
+            if col_ts:
+                right_col, right_ts = col_ts[-1]
+                left_ts             = col_ts[0][1]
+                span                = right_ts - left_ts
+
+                def _place(lbl: str, pos: int, anchor: str = "left") -> None:
+                    if anchor == "right":
+                        pos = pos - len(lbl) + 1
+                    elif anchor == "center":
+                        pos = pos - len(lbl) // 2
+                    for i, ch in enumerate(lbl):
+                        if 0 <= pos + i < graph_w:
+                            axis[pos + i] = ch
+
+                # Pick the largest round interval that fits ~3-6 ticks in span.
+                NICE = [7200, 3600, 1800, 900, 600, 300, 120, 60, 30, 10, 5, 1]
+                tick_s = NICE[0]
+                for iv in NICE:
+                    if span / iv >= 3:
+                        tick_s = iv
+                        break
+
+                _place("now", right_col, "right")
+                for mult in range(1, int(span / tick_s) + 2):
+                    ago = mult * tick_s
+                    if ago > span:
+                        break
+                    target = right_ts - ago
+                    col = min(col_ts, key=lambda ct: abs(ct[1] - target))[0]
+                    _place(_fmt_ago(ago), col, "center")
+
+            text.append("".join(axis), style="dim")
+
+        else:
+            # ── data row ────────────────────────────────────────────────────
+            row_from_bot = data_rows - 1 - row
+            row_top_v    = max_v * (row_from_bot + 1) / data_rows
+            row_bot_v    = max_v * row_from_bot / data_rows
+
+            if row in tick_rows:
+                lbl = _fmt_y(row_top_v, unit)
+                text.append(f"{lbl:>8}", style="dim green")
+            else:
+                text.append(" " * 8)
+            text.append("┤", style="dim")
+
+            for col, val in enumerate(disp_vals):
+                # Empty column (no data yet)
+                if val is None:
+                    char = " "
+                elif val >= row_top_v:
+                    char = "█"
+                elif val > row_bot_v:
+                    frac = (val - row_bot_v) / (row_top_v - row_bot_v)
+                    char = BLOCKS[max(1, min(7, int(frac * 8)))]
+                else:
+                    char = " "
+
+                is_hover = (hover_col is not None and col == hover_col
+                            and char == " " and row == 0)
+                in_sel   = col in sel_set
+
+                if in_sel:
+                    if char == " ":
+                        text.append("░", style="yellow dim")
+                    else:
+                        text.append(char, style="bold yellow")
+                elif is_hover:
+                    text.append("▾", style="dim white")
+                else:
+                    if char == " " or val is None:
+                        text.append(" ")
+                    else:
+                        norm = val / max_v
+                        if norm > 0.85:
+                            style = "bold bright_red"
+                        elif norm > 0.60:
+                            style = "bright_yellow"
+                        elif norm > 0.30:
+                            style = base_color
+                        else:
+                            style = base_color + " dim"
+                        text.append(char, style=style)
+
+        if row < height - 1:
+            text.append("\n")
+
+    return text
+
+
+# ── widgets ───────────────────────────────────────────────────────────────────
+
+class PowerGraph(Widget):
+    """Interactive graph. Click-drag to select a time range."""
+
+    DEFAULT_CSS = """
+    PowerGraph {
+        height: 1fr;
+        width: 1fr;
+    }
+    """
+
+    class SelectionUpdated(Message):
+        def __init__(self, sel_readings: List[Reading]) -> None:
+            super().__init__()
+            self.sel_readings = sel_readings
+
+    class HoverUpdated(Message):
+        def __init__(self, reading: Optional[Reading], col: Optional[int]) -> None:
+            super().__init__()
+            self.reading = reading
+            self.col     = col
+
+    def __init__(self, app_ref: "StinsonApp", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.app_ref    = app_ref
+        self._sel_start: Optional[int] = None
+        self._sel_end:   Optional[int] = None
+        self._hover_col: Optional[int] = None
+        self._dragging  = False
+
+    @property
+    def _graph_w(self) -> int:
+        return max(0, self.size.width - Y_AXIS_COLS)
+
+    def _x_to_col(self, x: int) -> int:
+        return max(0, min(self._graph_w - 1, x - Y_AXIS_COLS))
+
+    def _group_info(self):
+        """Return (first_group, pad_left, n) matching make_graph's grouping."""
+        readings    = list(self.app_ref.readings)
+        n           = len(readings)
+        zoom        = self.app_ref.zoom
+        gw          = self._graph_w
+        num_groups  = (n + zoom - 1) // zoom if n > 0 else 0
+        first_group = max(0, num_groups - gw)
+        num_vis     = num_groups - first_group
+        pad_left    = gw - num_vis
+        return readings, n, zoom, first_group, pad_left
+
+    def _col_to_reading(self, col: int) -> Optional[Reading]:
+        readings, n, zoom, first_group, pad_left = self._group_info()
+        g_idx = col - pad_left
+        if g_idx < 0:
+            return None
+        g  = first_group + g_idx
+        ge = min((g + 1) * zoom, n) - 1   # last reading index in this group
+        return readings[ge] if 0 <= ge < n else None
+
+    def _sel_readings(self) -> List[Reading]:
+        if self._sel_start is None or self._sel_end is None:
+            return []
+        readings, n, zoom, first_group, pad_left = self._group_info()
+        s, e      = sorted([self._sel_start, self._sel_end])
+        gs_idx    = max(0, s - pad_left)
+        ge_idx    = max(0, e - pad_left)
+        g_start   = first_group + gs_idx
+        g_end     = first_group + ge_idx
+        start_idx = g_start * zoom
+        end_idx   = min((g_end + 1) * zoom, n) - 1
+        if start_idx > end_idx:
+            return []
+        return readings[start_idx : end_idx + 1]
+
+    def render(self) -> Text:
+        w, h = self.size.width, self.size.height
+        snapshot = self.app_ref._paused_snapshot
+        readings = snapshot if snapshot is not None else list(self.app_ref.readings)
+        return make_graph(
+            readings, w, h,
+            metric    = self.app_ref.metric,
+            sel_start = self._sel_start,
+            sel_end   = self._sel_end,
+            hover_col = self._hover_col,
+            zoom      = self.app_ref.zoom,
+        )
+
+    # ── mouse events ──────────────────────────────────────────────────────────
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        col             = self._x_to_col(event.x)
+        self._sel_start = col
+        self._sel_end   = col
+        self._dragging  = True
+        self.refresh()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        col             = self._x_to_col(event.x)
+        self._hover_col = col
+        if self._dragging:
+            self._sel_end = col
+        self.refresh()
+        self.post_message(self.HoverUpdated(self._col_to_reading(col), col))
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self._sel_end  = self._x_to_col(event.x)
+        self._dragging = False
+        self.refresh()
+        self.post_message(self.SelectionUpdated(self._sel_readings()))
+
+    def on_leave(self, event: events.Leave) -> None:
+        self._hover_col = None
+        self.refresh()
+        self.post_message(self.HoverUpdated(None, None))
+
+    def clear_selection(self) -> None:
+        self._sel_start = None
+        self._sel_end   = None
+        self.refresh()
+        self.post_message(self.SelectionUpdated([]))
+
+
+class StatsBar(Static):
+    """Single-line stats row: current reading + aggregate stats."""
+
+    DEFAULT_CSS = """
+    StatsBar {
+        height: 1;
+        padding: 0 1;
+        background: $surface;
+    }
+    """
+
+    def set_stats(
+        self,
+        readings: deque,
+        latest: Optional[Reading],
+        paused: bool,
+        metric: str,
+    ) -> None:
+        if not readings:
+            self.update("[dim]— waiting for device —[/dim]")
+            return
+
+        r     = latest or list(readings)[-1]
+        all_p = [x.power_mw for x in readings]
+
+        pause_tag = "  [bold red]⏸ PAUSED[/]" if paused else ""
+        n = len(readings)
+
+        self.update(
+            f"[bold bright_cyan]{r.power_mw:.0f} mW[/]  "
+            f"[dim cyan]{r.voltage_mv / 1000:.3f} V  {r.current_ma:.0f} mA[/]"
+            f"    "
+            f"[dim]min [/dim][green]{min(all_p):.0f}[/green][dim] mW  [/dim]"
+            f"[dim]avg [/dim][yellow]{sum(all_p) / len(all_p):.0f}[/yellow][dim] mW  [/dim]"
+            f"[dim]max [/dim][red]{max(all_p):.0f}[/red][dim] mW[/dim]"
+            f"    [dim]{n} samples[/dim]"
+            f"{pause_tag}"
+        )
+
+
+class InfoBar(Static):
+    """Bottom bar: shows selection stats or hover value."""
+
+    DEFAULT_CSS = """
+    InfoBar {
+        height: 1;
+        padding: 0 1;
+        background: $surface-darken-1;
+    }
+    """
+
+    _IDLE = "[dim]Click and drag on the graph to measure average over a time range[/dim]"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(self._IDLE, *args, **kwargs)
+
+    def show_selection(self, sel: List[Reading]) -> None:
+        if not sel:
+            self.update(self._IDLE)
+            return
+
+        avg_p = sum(r.power_mw   for r in sel) / len(sel)
+        avg_i = sum(r.current_ma for r in sel) / len(sel)
+        avg_v = sum(r.voltage_mv for r in sel) / len(sel)
+        dur   = sel[-1].timestamp - sel[0].timestamp
+        t0    = datetime.fromtimestamp(sel[0].timestamp).strftime("%H:%M:%S")
+        t1    = datetime.fromtimestamp(sel[-1].timestamp).strftime("%H:%M:%S")
+
+        self.update(
+            f"[bold]Selection[/]  {t0} → {t1}  "
+            f"({dur:.1f} s · {len(sel)} samples)    "
+            f"avg  [bold yellow]{avg_p:.1f} mW[/]  "
+            f"[yellow]{avg_i:.1f} mA[/]  "
+            f"[yellow]{avg_v / 1000:.3f} V[/]"
+        )
+
+    def show_hover(self, reading: Optional[Reading]) -> None:
+        if reading is None:
+            return  # keep whatever is shown (selection or idle)
+        ts = datetime.fromtimestamp(reading.timestamp).strftime("%H:%M:%S")
+        self.update(
+            f"[dim]cursor → [/dim]{ts}   "
+            f"[bright_cyan]{reading.power_mw:.0f} mW[/]  "
+            f"[dim]{reading.current_ma:.0f} mA  "
+            f"{reading.voltage_mv / 1000:.3f} V[/dim]"
+        )
+
+
+# ── app ───────────────────────────────────────────────────────────────────────
+
+class StinsonApp(App):
+    """stinson-top — Interactive device power monitor."""
+
+    CSS = """
+    Screen {
+        background: $background;
+    }
+    #header {
+        height: 1;
+        background: $primary-darken-2;
+    }
+    #title-text {
+        width: 1fr;
+        height: 1;
+        color: $text;
+        text-style: bold;
+        content-align: left middle;
+        padding: 0 1;
+    }
+    #board-select {
+        width: 16;
+        height: 1;
+        border: none;
+        background: $primary-darken-1;
+    }
+    """
+
+    BINDINGS = [
+        ("q",      "quit",           "Quit"),
+        ("p",      "toggle_pause",   "Pause"),
+        ("c",      "clear_sel",      "Clear sel"),
+        ("escape", "clear_sel",      ""),
+        ("r",      "reset",          "Reset"),
+        ("1",      "metric_power",   "Power"),
+        ("2",      "metric_current", "Current"),
+        ("3",      "metric_voltage", "Voltage"),
+        ("-",      "zoom_out",       "Zoom out"),
+        ("=",      "zoom_in",        "Zoom in"),
+    ]
+
+    def __init__(self, boards: List[str], interval: float, do_log: bool) -> None:
+        super().__init__()
+        self.boards   = boards
+        self.interval = interval
+        self.do_log   = do_log
+
+        self.readings: deque[Reading] = deque(maxlen=MAX_SAMPLES)
+        self.metric           = "power_mw"
+        self.zoom             = 1
+        self._paused_ref      = [False]   # mutable so bg thread can read it
+        self._board_ref       = [boards[0]]
+        self._paused_snapshot: Optional[List[Reading]] = None
+        self._latest: Optional[Reading] = None
+
+        self._csv_file   = None
+        self._csv_writer = None
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="header"):
+            yield Static("⚡ stinson-top", id="title-text")
+            yield Select(
+                options=[(b, b) for b in self.boards],
+                value=self._board_ref[0],
+                id="board-select",
+                compact=True,
+            )
+        yield StatsBar(id="stats")
+        yield PowerGraph(self, id="graph")
+        yield InfoBar(id="info")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        if self.do_log:
+            self._setup_log()
+        self._start_polling()
+
+    # ── CSV logging ───────────────────────────────────────────────────────────
+
+    def _setup_log(self) -> None:
+        log_dir = Path.home() / ".stinson-top" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts   = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = log_dir / f"{ts}.csv"
+        self._csv_file   = open(path, "w", newline="")
+        self._csv_writer = csv.writer(self._csv_file)
+        self._csv_writer.writerow(["timestamp", "power_mw", "voltage_mv", "current_ma"])
+        self.notify(f"Logging to {path}", title="stinson-top", timeout=6)
+
+    # ── polling ───────────────────────────────────────────────────────────────
+
+    def _start_polling(self) -> None:
+        t = threading.Thread(
+            target=_poll_loop,
+            args=(self._board_ref, self.interval, self._on_reading_bg),
+            daemon=True,
+        )
+        t.start()
+
+    def _on_reading_bg(self, reading: Reading) -> None:
+        """Called from background thread. Appends data here; only wakes the
+        main thread when not paused — avoids stutter during pause."""
+        self.readings.append(reading)
+        self._latest = reading
+        if self._csv_writer:
+            self._csv_writer.writerow([
+                reading.timestamp, reading.power_mw,
+                reading.voltage_mv, reading.current_ma,
+            ])
+            self._csv_file.flush()
+        if not self._paused_ref[0]:
+            self.call_from_thread(self._refresh_ui)
+
+    # ── UI refresh ────────────────────────────────────────────────────────────
+
+    def _refresh_ui(self) -> None:
+        self.query_one("#stats", StatsBar).set_stats(
+            self.readings, self._latest, self._paused_ref[0], self.metric
+        )
+        graph = self.query_one("#graph", PowerGraph)
+        graph.refresh()
+        # Keep info bar avg in sync with whatever is currently under the selection.
+        if graph._sel_start is not None and not graph._dragging:
+            self.query_one("#info", InfoBar).show_selection(graph._sel_readings())
+
+    # ── message handlers ──────────────────────────────────────────────────────
+
+    def on_power_graph_selection_updated(self, event: PowerGraph.SelectionUpdated) -> None:
+        self.query_one("#info", InfoBar).show_selection(event.sel_readings)
+
+    def on_power_graph_hover_updated(self, event: PowerGraph.HoverUpdated) -> None:
+        # Only show hover when nothing is selected
+        graph = self.query_one("#graph", PowerGraph)
+        if graph._sel_start is None:
+            info = self.query_one("#info", InfoBar)
+            if event.reading:
+                info.show_hover(event.reading)
+            else:
+                info.update(InfoBar._IDLE)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.value is Select.BLANK:
+            return
+        board = str(event.value)
+        self._board_ref[0] = board
+        self.readings.clear()
+        self._latest = None
+        self.query_one("#graph", PowerGraph).clear_selection()
+        self._refresh_ui()
+        self.notify(f"Board → {board}", timeout=2)
+
+    # ── actions ───────────────────────────────────────────────────────────────
+
+    def action_toggle_pause(self) -> None:
+        self._paused_ref[0] = not self._paused_ref[0]
+        if self._paused_ref[0]:
+            self._paused_snapshot = list(self.readings)
+        else:
+            self._paused_snapshot = None
+        self._refresh_ui()
+        self.notify("Paused" if self._paused_ref[0] else "Resumed", timeout=2)
+
+    def action_clear_sel(self) -> None:
+        self.query_one("#graph", PowerGraph).clear_selection()
+        self.query_one("#info", InfoBar).update(InfoBar._IDLE)
+
+    def action_reset(self) -> None:
+        self.readings.clear()
+        self._latest = None
+        graph = self.query_one("#graph", PowerGraph)
+        graph.clear_selection()
+        self._refresh_ui()
+
+    def _update_title(self) -> None:
+        zoom_tag = f"  ·  {self.zoom}×" if self.zoom > 1 else ""
+        self.query_one("#title-text", Static).update(
+            f"⚡ stinson-top  ·  {METRIC_INFO[self.metric][0]}{zoom_tag}"
+        )
+
+    def _set_metric(self, metric: str) -> None:
+        self.metric = metric
+        self._update_title()
+        self.query_one("#graph", PowerGraph).clear_selection()
+        self._refresh_ui()
+
+    def action_zoom_out(self) -> None:
+        self.zoom = min(128, self.zoom * 2)
+        self._update_title()
+        self._refresh_ui()
+
+    def action_zoom_in(self) -> None:
+        if self.zoom > 1:
+            self.zoom = self.zoom // 2
+            self._update_title()
+            self._refresh_ui()
+
+    def action_metric_power(self)   -> None: self._set_metric("power_mw")
+    def action_metric_current(self) -> None: self._set_metric("current_ma")
+    def action_metric_voltage(self) -> None: self._set_metric("voltage_mv")
+
+    def on_unmount(self) -> None:
+        if self._csv_file:
+            self._csv_file.close()
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="stinson-top: interactive device power monitor"
+    )
+    parser.add_argument("--boards",   nargs="+", default=["ar1", "ar2"], metavar="BOARD",
+                                       help="Boards available in the dropdown (default: ar1 ar2)")
+    parser.add_argument("--interval", default=1.0, type=float, help="Poll interval in seconds (default: 1.0)")
+    parser.add_argument("--log",      action="store_true",     help="Log readings to CSV in ~/.stinson-top/logs/")
+    args = parser.parse_args()
+
+    StinsonApp(boards=args.boards, interval=args.interval, do_log=args.log).run()
+
+
+if __name__ == "__main__":
+    main()

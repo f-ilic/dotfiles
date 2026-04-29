@@ -1,0 +1,181 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["textual>=0.50"]
+# ///
+"""specs-remount — adb root / disable-verity / remount for Spectacles devices."""
+
+import os
+import queue
+import subprocess
+import sys
+import threading
+
+for _p in ("/opt/homebrew/bin", "/usr/local/bin"):
+    if os.path.isdir(_p) and _p not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _p + ":" + os.environ["PATH"]
+
+
+def adb_devices() -> list[tuple[str, str]]:
+    try:
+        r = subprocess.run(["adb", "devices", "-l"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in r.stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            model = next((p[6:] for p in parts if p.startswith("model:")), "")
+            out.append((parts[0], model))
+    return out
+
+
+def run_tui() -> None:
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.containers import Horizontal, Vertical
+    from textual.widgets import Button, Footer, Header, Label, RichLog, Static, Switch
+
+    class RemountApp(App):
+        CSS = """
+        Screen { background: $surface; }
+        #body { padding: 2 4; height: 1fr; }
+        .heading { text-style: bold; margin-top: 1; margin-bottom: 1; }
+        #devices { height: auto; }
+        .device-row { height: auto; align: left middle; margin-bottom: 0; }
+        .device-row Switch { margin-right: 1; }
+        #actions { height: auto; margin-top: 1; margin-bottom: 1; }
+        #actions Button { margin-right: 1; }
+        #log { height: 1fr; border: round $primary; }
+        """
+
+        BINDINGS = [
+            Binding("ctrl+a", "select_all", "Select All"),
+            Binding("ctrl+r", "reload",     "Reload devices"),
+            Binding("ctrl+q", "quit",       "Quit"),
+            Binding("escape", "quit",       "Quit", show=False),
+        ]
+
+        def compose(self) -> ComposeResult:
+            yield Header()
+            with Vertical(id="body"):
+                yield Static("Devices", classes="heading")
+                yield Vertical(id="devices")
+                yield Static("Run on selected devices", classes="heading")
+                with Horizontal(id="actions"):
+                    yield Button("adb root",           id="btn-root",    variant="default")
+                    yield Button("adb disable-verity", id="btn-verity",  variant="default")
+                    yield Button("adb remount",        id="btn-remount", variant="default")
+                yield Static("Output", classes="heading")
+                yield RichLog(id="log", markup=True, highlight=True, auto_scroll=True)
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.title = "specs-remount"
+            self._selected: set[str] = set()
+            self._devices: list[tuple[str, str]] = []
+            self._running = False
+            self._q: queue.Queue = queue.Queue()
+            self.set_interval(0.05, self._drain_log)
+            self.call_after_refresh(lambda: self._load_devices(initial=True))
+
+        def _drain_log(self) -> None:
+            w = self.query_one("#log", RichLog)
+            while True:
+                try:
+                    w.write(self._q.get_nowait())
+                except queue.Empty:
+                    break
+
+        def _load_devices(self, initial: bool = False) -> None:
+            container = self.query_one("#devices", Vertical)
+            container.remove_children()
+            self._devices = adb_devices()
+            if not self._devices:
+                container.mount(Static("[red]No ADB devices found — Ctrl+R to retry[/red]"))
+                return
+            cv_soc = os.environ.get("CV_SOC", "")
+            if initial and cv_soc:
+                self._selected.add(cv_soc)
+            for serial, model in self._devices:
+                container.mount(Horizontal(
+                    Switch(value=(serial in self._selected), id=f"sw-{serial}"),
+                    Label(f"  {serial}  [dim]{model}[/dim]"),
+                    classes="device-row",
+                ))
+
+        def on_switch_changed(self, event: Switch.Changed) -> None:
+            event.stop()
+            sid = getattr(event.switch, "id", "") or ""
+            if sid.startswith("sw-"):
+                serial = sid[3:]
+                if event.value:
+                    self._selected.add(serial)
+                else:
+                    self._selected.discard(serial)
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            mapping = {
+                "btn-root":    "root",
+                "btn-verity":  "disable-verity",
+                "btn-remount": "remount",
+            }
+            cmd = mapping.get(event.button.id or "")
+            if cmd:
+                self._run_adb(cmd)
+
+        def _run_adb(self, adb_cmd: str) -> None:
+            if self._running:
+                return
+            if not self._selected:
+                self._q.put("[yellow]No devices selected — toggle at least one device.[/yellow]")
+                return
+            self._running = True
+            serials = list(self._selected)
+            q = self._q
+
+            def worker() -> None:
+                from rich.markup import escape
+                q.put(f"\n[bold]adb {adb_cmd}[/bold]  [{', '.join(serials)}]")
+                results: dict[str, str] = {}
+                lock = threading.Lock()
+
+                def do(serial: str) -> None:
+                    r = subprocess.run(
+                        ["adb", "-s", serial, adb_cmd],
+                        capture_output=True, text=True,
+                    )
+                    with lock:
+                        results[serial] = (r.stdout + r.stderr).strip()
+
+                threads = [threading.Thread(target=do, args=(s,)) for s in serials]
+                for t in threads: t.start()
+                for t in threads: t.join()
+
+                for serial in serials:
+                    q.put(f"  [dim]{serial}[/dim]  {escape(results.get(serial, ''))}")
+                self._running = False
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def action_select_all(self) -> None:
+            all_serials = {s for s, _ in self._devices}
+            new_val = not (all_serials <= self._selected)
+            for serial, _ in self._devices:
+                try:
+                    self.query_one(f"#sw-{serial}", Switch).value = new_val
+                except Exception:
+                    pass
+
+        def action_reload(self) -> None:
+            self._selected.clear()
+            self._load_devices()
+
+    RemountApp().run()
+
+
+if __name__ == "__main__":
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("specs-remount — adb root / disable-verity / remount\n\nRun with no args to launch TUI.")
+        sys.exit(0)
+    run_tui()

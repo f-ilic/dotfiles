@@ -35,6 +35,10 @@ from typing import Iterable, Optional
 SCRIPT_PATH = os.path.realpath(__file__)
 DEFAULT_MOUNT_BASE = Path.home() / "mnt"
 
+for _p in ("/opt/homebrew/bin", "/usr/local/bin"):
+    if os.path.isdir(_p) and _p not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _p + ":" + os.environ["PATH"]
+
 # ────────────────────────────────────────────────────────────────────────────
 # SFTP server (bundled shim, invoked as `<this-file> --sftp-server SERIAL`)
 # ────────────────────────────────────────────────────────────────────────────
@@ -69,6 +73,20 @@ OPEN_READ, OPEN_WRITE, OPEN_APPEND = 0x01, 0x02, 0x04
 OPEN_CREAT, OPEN_TRUNC, OPEN_EXCL = 0x08, 0x10, 0x20
 
 _OK_SENTINEL = b"__SFTP_OK_DELIM_zX9__"
+
+_stat_cache: dict = {}   # (path, follow) -> (info, err, expiry)
+_dir_cache: dict = {}    # path -> (entries, expiry)
+_STAT_TTL = 2.0
+_DIR_TTL  = 1.0
+
+
+def _invalidate(path: str) -> None:
+    _stat_cache.pop((path, True), None)
+    _stat_cache.pop((path, False), None)
+    parent = str(Path(path).parent)
+    _dir_cache.pop(parent, None)
+    _stat_cache.pop((parent, True), None)
+    _stat_cache.pop((parent, False), None)
 
 
 def _log(*a):
@@ -186,26 +204,42 @@ _STAT_FMT = "%f|%s|%u|%g|%X|%Y|%h"
 
 
 def _stat_one(path, follow):
+    key = (path, follow)
+    entry = _stat_cache.get(key)
+    if entry:
+        info, err, expiry = entry
+        if time.monotonic() < expiry:
+            return info, err
     args = ["stat"] + (["-L"] if follow else []) + ["-c", _STAT_FMT, "--", path]
     r = _adb(args)
     out = r.stdout.decode("utf-8", "replace").strip()
     if not out:
-        return None, (r.stderr or b"no output")
-    line = out.splitlines()[0]
-    parts = line.split("|")
-    if len(parts) < 7:
-        return None, line.encode()  # error message merged into stdout
-    return {
-        "mode":  int(parts[0], 16),
-        "size":  int(parts[1]),
-        "uid":   LOCAL_UID,
-        "gid":   LOCAL_GID,
-        "atime": int(parts[4]),
-        "mtime": int(parts[5]),
-    }, None
+        info, err = None, (r.stderr or b"no output")
+    else:
+        line = out.splitlines()[0]
+        parts = line.split("|")
+        if len(parts) < 7:
+            info, err = None, line.encode()
+        else:
+            info = {
+                "mode":  int(parts[0], 16),
+                "size":  int(parts[1]),
+                "uid":   LOCAL_UID,
+                "gid":   LOCAL_GID,
+                "atime": int(parts[4]),
+                "mtime": int(parts[5]),
+            }
+            err = None
+    _stat_cache[key] = (info, err, time.monotonic() + _STAT_TTL)
+    return info, err
 
 
 def _list_dir(path):
+    entry = _dir_cache.get(path)
+    if entry:
+        entries, expiry = entry
+        if time.monotonic() < expiry:
+            return entries, None
     fmt = "%f|%s|%u|%g|%X|%Y|%h|%n"
     args = ["find", path, "-mindepth", "1", "-maxdepth", "1",
             "-exec", "stat", "-c", fmt, "{}", "+"]
@@ -213,6 +247,7 @@ def _list_dir(path):
     if r.returncode != 0:
         return None, r.stderr
     entries = []
+    now = time.monotonic()
     for line in r.stdout.decode("utf-8", "replace").splitlines():
         if not line:
             continue
@@ -226,11 +261,18 @@ def _list_dir(path):
             name = full.rsplit("/", 1)[-1] if "/" in full else full
         except ValueError:
             _log("list parse fail:", line); continue
-        entries.append({
-            "name": name, "mode": mode, "size": size,
-            "uid": LOCAL_UID, "gid": LOCAL_GID,
-            "atime": atime, "mtime": mtime,
-        })
+        e = {"name": name, "mode": mode, "size": size,
+             "uid": LOCAL_UID, "gid": LOCAL_GID,
+             "atime": atime, "mtime": mtime}
+        entries.append(e)
+        # Pre-populate stat cache so subsequent per-file LSTAT calls are free
+        child = path.rstrip("/") + "/" + name
+        info = {k: e[k] for k in ("mode", "size", "uid", "gid", "atime", "mtime")}
+        expiry_ts = now + _STAT_TTL
+        _stat_cache[(child, False)] = (info, None, expiry_ts)
+        if not _stat.S_ISLNK(mode):
+            _stat_cache[(child, True)] = (info, None, expiry_ts)
+    _dir_cache[path] = (entries, now + _DIR_TTL)
     return entries, None
 
 
@@ -266,8 +308,8 @@ def _truncate(path, sz): return _adb_run(["truncate", "-s", str(sz), "--", path]
 
 def _utime(path, atime, mtime):
     def fmt(ts): return time.strftime("%Y%m%d%H%M.%S", time.gmtime(ts))
-    _adb_run(["touch", "-a", "-t", fmt(atime), "--", path])
-    return _adb_run(["touch", "-m", "-t", fmt(mtime), "--", path])
+    af, mf, p = shlex.quote(fmt(atime)), shlex.quote(fmt(mtime)), shlex.quote(path)
+    return _adb_run(["sh", "-c", f"touch -c -a -t {af} {p} && touch -c -m -t {mf} {p}"])
 
 
 def _longname(name, attrs):
@@ -355,6 +397,13 @@ def _dispatch(in_, out, typ, data):
         info, err = _stat_one(ho.path, follow=True)
         if info is None:
             _reply_status(out, reqid, _map_err(err)); return
+        # Use local tmpfile size for accuracy during in-progress writes
+        if ho.fd is not None:
+            try:
+                info = dict(info)
+                info["size"] = os.fstat(ho.fd).st_size
+            except OSError:
+                pass
         _reply_attrs(out, reqid, **info)
 
     elif typ == SSH_FXP_OPENDIR:
@@ -393,12 +442,14 @@ def _dispatch(in_, out, typ, data):
         tmp_path = f.name
         f.close()
         if existing is not None and not (flags & OPEN_TRUNC):
-            cmd = ["adb", "-s", DEVICE, "exec-out", "cat", "--", path]
-            with open(tmp_path, "wb") as fout:
-                p = subprocess.run(cmd, stdout=fout, stderr=subprocess.PIPE)
+            # adb pull uses the sync protocol — much faster than exec-out cat for large files
+            p = subprocess.run(
+                ["adb", "-s", DEVICE, "pull", path, tmp_path],
+                capture_output=True,
+            )
             if p.returncode != 0:
                 os.unlink(tmp_path)
-                _reply_status(out, reqid, _map_err(p.stderr)); return
+                _reply_status(out, reqid, _map_err(p.stderr or p.stdout)); return
         elif want_write and existing is None and (flags & OPEN_CREAT):
             ok, err = _adb_run(["sh", "-c", f": > {shlex.quote(path)}"])
             if not ok:
@@ -468,6 +519,8 @@ def _dispatch(in_, out, typ, data):
                 ok, err = _push(ho.tmp, ho.path)
                 if not ok:
                     push_err = err
+                else:
+                    _invalidate(ho.path)
         finally:
             if ho.tmp:
                 try: os.unlink(ho.tmp)
@@ -486,11 +539,13 @@ def _dispatch(in_, out, typ, data):
     elif typ == SSH_FXP_REMOVE:
         path = r.s()
         ok, err = _adb_run(["rm", "-f", "--", path])
+        if ok: _invalidate(path)
         _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
 
     elif typ == SSH_FXP_RMDIR:
         path = r.s()
         ok, err = _adb_run(["rmdir", "--", path])
+        if ok: _invalidate(path)
         _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
 
     elif typ == SSH_FXP_MKDIR:
@@ -498,6 +553,7 @@ def _dispatch(in_, out, typ, data):
         ok, err = _adb_run(["mkdir", "--", path])
         if not ok:
             _reply_status(out, reqid, _map_err(err), "mkdir failed"); return
+        _invalidate(path)
         if "mode" in attrs_in:
             _chmod(path, attrs_in["mode"])
         _reply_status(out, reqid, SSH_FX_OK)
@@ -505,12 +561,14 @@ def _dispatch(in_, out, typ, data):
     elif typ == SSH_FXP_RENAME:
         src = r.s(); dst = r.s()
         ok, err = _adb_run(["mv", "--", src, dst])
+        if ok: _invalidate(src); _invalidate(dst)
         _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
 
     elif typ == SSH_FXP_SYMLINK:
         # sshfs sends (target, link) — same as OpenSSH's sftp-server.
         target = r.s(); link = r.s()
         ok, err = _adb_run(["ln", "-s", "--", target, link])
+        if ok: _invalidate(link)
         _reply_status(out, reqid, SSH_FX_OK if ok else _map_err(err))
 
     elif typ in (SSH_FXP_SETSTAT, SSH_FXP_FSETSTAT):
@@ -540,6 +598,7 @@ def _dispatch(in_, out, typ, data):
         if "atime" in attrs_in and "mtime" in attrs_in:
             ok, _e = _utime(path, attrs_in["atime"], attrs_in["mtime"])
             if not ok: all_ok = False
+        _invalidate(path)
         _reply_status(out, reqid, SSH_FX_OK if all_ok else SSH_FX_FAILURE)
 
     else:
@@ -638,7 +697,7 @@ def do_mount(serial: str, mountpoint: str, read_only: bool) -> tuple[bool, str]:
     if find_active_mount(str(mp)):
         return False, f"already mounted at {mp}"
     ssh_command = f"{shlex.quote(SCRIPT_PATH)} --sftp-server {shlex.quote(serial)}"
-    opts = ["reconnect"]
+    opts = ["reconnect", "big_writes", "max_read=131072", "max_write=131072"]
     if read_only:
         opts.append("ro")
     cmd = [
@@ -677,8 +736,8 @@ def run_tui() -> int:
     try:
         from textual.app import App, ComposeResult
         from textual.binding import Binding
-        from textual.containers import Vertical
-        from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+        from textual.containers import Horizontal, Vertical
+        from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static, Switch
     except ImportError:
         sys.stderr.write("Textual not installed (pip install textual)\n")
         return 1
@@ -696,19 +755,27 @@ def run_tui() -> int:
             border: round $primary;
         }
         ListView:focus { border: round $accent; }
+        #ro-row { height: auto; align: left middle; margin-top: 1; margin-bottom: 1; }
+        #ro-row Switch { margin-right: 1; }
+        #ro-row Label { margin-top: 1; }
         #path { width: 100%; }
         #status { height: 1; padding: 0 2; color: $success; }
         #status.error { color: $error; }
-        #hint { color: $text-muted; margin-top: 1; }
         """
 
         BINDINGS = [
-            # Enter (= Ctrl+M in terminals) toggles based on current state.
-            Binding("enter",  "toggle", "Mount/Unmount"),
-            Binding("ctrl+r", "reload",  "Reload"),
-            Binding("ctrl+q", "quit",    "Quit"),
-            Binding("escape", "quit",    "Quit", show=False),
+            Binding("enter",  "toggle",    "Mount/Unmount"),
+            Binding("r",      "toggle_ro", "Read-only"),
+            Binding("ctrl+r", "reload",    "Reload"),
+            Binding("ctrl+q", "quit",      "Quit"),
+            Binding("escape", "quit",      "Quit", show=False),
         ]
+
+        def on_switch_changed(self, event: Switch.Changed) -> None:
+            event.stop()
+            if getattr(event.switch, "id", "") != "ro-switch":
+                return
+            self._read_only = event.value
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -716,13 +783,16 @@ def run_tui() -> int:
             with Vertical(id="body"):
                 yield Static("Device", classes="section")
                 yield ListView(id="device-list")
+                with Horizontal(id="ro-row"):
+                    yield Switch(id="ro-switch", value=True)
+                    yield Label("Read-only")
                 yield Static("Mountpoint", classes="section")
                 yield Input(placeholder="~/mnt/<serial>", id="path")
-                yield Static("Read-only mode: prefix path with 'ro:' to enable", id="hint")
             yield Footer()
 
         def on_mount(self) -> None:
             self.title = "specs-mount-fs"
+            self._read_only: bool = True
             self._populate_devices(initial=True)
 
         def _populate_devices(self, initial: bool = False) -> None:
@@ -736,9 +806,8 @@ def run_tui() -> int:
             preselect = 0
             for i, (serial, model) in enumerate(devices):
                 mp = default_mountpoint(serial)
-                tag = "  [bold green]● mounted[/bold green]" if find_active_mount(mp) else ""
-                label = f" {serial}  [dim]{model}[/dim]{tag}"
-                lv.append(ListItem(Label(label), name=serial))
+                mount_tag = "  [bold green]● mounted[/bold green]" if find_active_mount(mp) else ""
+                lv.append(ListItem(Label(f" {serial}  [dim]{model}[/dim]{mount_tag}"), name=serial))
                 if cv_soc and serial == cv_soc:
                     preselect = i
             lv.index = preselect
@@ -782,13 +851,12 @@ def run_tui() -> int:
 
         def _resolve_path_field(self) -> tuple[str, bool]:
             raw = self.query_one("#path", Input).value.strip()
-            ro = False
-            if raw.startswith("ro:"):
-                ro = True
-                raw = raw[3:].strip()
             if not raw:
                 raw = default_mountpoint(self._selected_serial() or "")
-            return str(Path(raw).expanduser()), ro
+            return str(Path(raw).expanduser()), self._read_only
+
+        def action_toggle_ro(self) -> None:
+            self.query_one("#ro-switch", Switch).toggle()
 
         def action_toggle(self) -> None:
             serial = self._selected_serial()
@@ -838,6 +906,7 @@ Mountpoint defaults to ~/mnt/<serial>. Pre-fix with `ro:` for read-only
 
 Inside the TUI:
   Enter           Mount selected device, or unmount if already mounted
+  R               Toggle read-only for the selected device
   Ctrl+R          Reload device list and mount status
   Ctrl+Q / Esc    Quit
 
