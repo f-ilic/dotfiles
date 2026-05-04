@@ -17,7 +17,7 @@ EOF
   exit 0
 fi
 
-python=/Users/filic/.local/pipx/venvs/nrf-shell/bin/python
+python="$HOME/.local/pipx/venvs/nrf-shell/bin/python"
 
 nrf_ports=$("$python" - <<'PYEOF'
 from nrf_shell.serial_stream.uart_device_finder.platform_uart_device_finder import comports
