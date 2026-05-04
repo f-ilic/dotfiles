@@ -139,7 +139,8 @@ def iter_rows(data: Any, depth: int = 0, path: list | None = None) -> Generator:
 # ── Known configs ─────────────────────────────────────────────────────────────
 
 KNOWN_CONFIGS: list[tuple[str, str]] = [
-    ("Activity", "/usr/share/vos-context-cues/assets/activity.json"),
+    ("Activity-Network",       "/usr/share/vos-context-cues/assets/activity.json"),
+    ("Activity-Postprocessor", "/usr/share/vos-context-cues/assets/activity-config.json"),
 ]
 
 
@@ -153,6 +154,8 @@ def get_adb_devices() -> list[tuple[str, str]]:
             if len(parts) < 2 or parts[1] != "device":
                 continue
             serial = parts[0]
+            if not serial.endswith("_cv"):
+                continue
             model = next((p[6:] for p in parts if p.startswith("model:")), "")
             label = f"{serial}  [dim]{model}[/dim]" if model else serial
             devices.append((serial, label))
@@ -211,8 +214,9 @@ class HomeScreen(Vertical):
             yield ListView(id="device-list")
 
         yield Static("Config", classes="section-title")
+        col_w = max(len(name) for name, _ in KNOWN_CONFIGS)
         yield ListView(
-            *[ListItem(Label(f" {name}  [dim]{path}[/dim]"), name=path) for name, path in KNOWN_CONFIGS],
+            *[ListItem(Label(f" {name:<{col_w}}  [dim]{path}[/dim]"), name=path) for name, path in KNOWN_CONFIGS],
             id="config-list",
         )
         yield Static("or enter a custom path:", id="custom-label")
@@ -456,7 +460,8 @@ Actions:
   Ctrl+Q          Quit
 
 Known configs (selectable from home screen):
-  Activity        /usr/share/vos-context-cues/assets/activity.json
+  Activity-Network       /usr/share/vos-context-cues/assets/activity.json
+  Activity-Postprocessor /usr/share/vos-context-cues/assets/activity-config.json
 
 Examples:
   specs-edit-json
