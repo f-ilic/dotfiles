@@ -35,10 +35,11 @@
 
     header {
       display: flex;
-      justify-content: flex-end;
+      justify-content: space-between;
       align-items: center;
-      gap: 6px;
-      margin-bottom: 8px;
+      gap: 8px;
+      margin-bottom: 6px;
+      min-width: 0;
     }
 
     h1 {
@@ -54,38 +55,12 @@
       font-size: 11px;
     }
 
-    .toolbar {
+    .header-meta {
       display: flex;
       align-items: center;
       justify-content: flex-end;
       gap: 8px;
-    }
-
-    .legend-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 8px;
-      flex-wrap: nowrap;
-      overflow: hidden;
-    }
-
-    .legend-row .legend {
-      flex: 1 1 auto;
-      margin: 0;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      min-width: 0;
-      overflow-x: auto;
-    }
-
-    .legend-row .stats {
       flex: 0 0 auto;
-      margin-left: 8px;
-      display: flex;
-      align-items: center;
     }
 
     .year-controls {
@@ -136,7 +111,7 @@
 
     .stats {
       display: flex;
-      gap: 8px;
+      gap: 4px;
       align-items: center;
       justify-content: flex-end;
     }
@@ -151,15 +126,17 @@
       color: var(--muted);
       font-size: 11px;
       display: inline-flex;
-      flex-direction: column;
+      flex-direction: row;
+      align-items: baseline;
+      gap: 3px;
       line-height: 1;
-      gap: 0;
       opacity: 0.9;
+      white-space: nowrap;
     }
 
     .stat strong {
       display: block;
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 700;
       color: var(--text);
       line-height: 1;
@@ -168,16 +145,25 @@
     .stat span {
       display: block;
       color: var(--muted);
-      font-size: 9px;
+      font-size: 10px;
       margin-top: 0;
       opacity: 0.9;
     }
 
     .legend {
       display: flex;
-      flex-wrap: wrap;
+      flex: 1 1 auto;
+      flex-wrap: nowrap;
+      align-items: center;
       gap: 5px;
-      margin: 0 0 8px;
+      margin: 0;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .legend::-webkit-scrollbar {
+      display: none;
     }
 
     .legend-item {
@@ -191,6 +177,7 @@
       color: var(--text);
       font-size: 10px;
       max-width: 100%;
+      flex: 0 0 auto;
     }
 
     .swatch {
@@ -342,17 +329,11 @@
       }
 
       header {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .toolbar {
-        justify-content: flex-start;
-        width: 100%;
+        gap: 6px;
       }
 
       .stats {
-        justify-content: flex-start;
+        justify-content: flex-end;
       }
 
       .months {
@@ -369,21 +350,17 @@
 <body>
   <main>
     <header>
-      <div class="toolbar">
+      <section class="legend" id="legend" aria-label="Legend"></section>
+      <div class="header-meta">
         <div class="year-controls" aria-label="Year navigation">
           <button class="year-button" id="prev-year" type="button" aria-label="Previous year">&lt;</button>
           <span class="year-title" id="year-title">----</span>
           <button class="year-button" id="next-year" type="button" aria-label="Next year">&gt;</button>
         </div>
-        <!-- range-summary removed per user request -->
         <div class="stats" id="stats" aria-label="Summary"></div>
       </div>
     </header>
 
-    <div class="legend-row">
-      <section class="legend" id="legend" aria-label="Legend"></section>
-      <div class="stats" id="stats" aria-label="Summary"></div>
-    </div>
     <section class="months" id="months" aria-label="Calendar"></section>
     <p class="empty-message">No entries recorded for this year yet.</p>
   </main>
