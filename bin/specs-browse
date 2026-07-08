@@ -46,7 +46,10 @@ do_render() {
     local root="${SPECS_BROWSE_ROOT:-/}"
     local matchf=""
     [ -f "$expf" ] || expf=/dev/null
-    # (filter matching added in Task 3)
+    if [ -n "$q" ]; then
+        matchf="$(mktemp)"
+        fzf --filter="$q" < "$paths" > "$matchf" 2>/dev/null
+    fi
     awk -v root="$root" -v expfile="$expf" -v matchfile="${matchf:-}" \
         -v mode="${q:+filter}" '
       function comps(p,   n){ if (p=="/") return 0; n=gsub(/\//,"",p); return n }
@@ -89,6 +92,7 @@ do_render() {
         }
       }
     ' "$expf" ${matchf:+"$matchf"} "$paths"
+    [ -n "$matchf" ] && rm -f "$matchf"
     return 0
 }
 
