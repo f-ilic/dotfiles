@@ -25,6 +25,11 @@ set -o pipefail
 
 self="$(command -v "$0" 2>/dev/null || printf '%s' "$0")"
 
+shq() {  # single-quote a path for safe interpolation into a remote `adb shell` command
+    local s=${1//\'/\'\\\'\'}
+    printf "'%s'" "$s"
+}
+
 do_treesort() {
     # stdin: raw find output; stdout: normalized, unique, tree-ordered paths.
     # Tree order = pre-order DFS with alphabetical siblings. Achieved by making
@@ -47,6 +52,7 @@ do_render() {
         matchf="$(mktemp)"
         fzf --filter="$q" < "$paths" > "$matchf" 2>/dev/null
     fi
+    # NOTE: dir-inference + tree layout below rely on $SPECS_BROWSE_PATHS being tree-sorted (a dir's first child immediately follows it).
     awk -v root="$root" -v expfile="$expf" -v matchfile="${matchf:-}" \
         -v mode="${q:+filter}" '
       function comps(p,   n){ if (p=="/") return 0; n=gsub(/\//,"",p); return n }
@@ -105,6 +111,7 @@ do_expand_all() {
 }
 
 is_dir_in_cache() {
+    [ "$1" = "${SPECS_BROWSE_ROOT:-/}" ] && return 0   # the crawl root is always a dir
     awk -v t="$1/" 'index($0,t)==1 { found=1; exit } END { exit found?0:1 }' "$SPECS_BROWSE_PATHS"
 }
 
@@ -152,11 +159,15 @@ spin() {
 do_crawl() {
     local root="${SPECS_BROWSE_ROOT:-/}" S="$SPECS_BROWSE_SERIAL"
     local prune="${SPECS_BROWSE_PRUNE:-/proc /sys /dev /acct /apex /config}"
-    local expr tmp pid
+    local expr tmp pid findcmd
     expr="$(build_prune_expr "$prune")"
     tmp="${SPECS_BROWSE_PATHS}.tmp"
-    ( adb -s "$S" shell "find '$root' \\( $expr \\) -prune -o -print" 2>/dev/null \
-        | "$self" --__treesort > "$tmp" ) &
+    if [ -n "$prune" ]; then
+        findcmd="find $(shq "$root") \\( $expr \\) -prune -o -print"
+    else
+        findcmd="find $(shq "$root") -print"
+    fi
+    ( adb -s "$S" shell "$findcmd" 2>/dev/null | "$self" --__treesort > "$tmp" ) &
     pid=$!
     spin "$pid" "crawling $S"
     wait "$pid"
@@ -172,6 +183,10 @@ do_pull() {
 
 view_file() {
     local p="$1" S="$SPECS_BROWSE_SERIAL" tmp f
+    if [ "$(adb -s "$S" shell "[ -f $(shq "$p") ] && echo F" 2>/dev/null | tr -d '\r')" != "F" ]; then
+        printf '%s is not a regular file — nothing to open.\n' "$p"
+        read -rsn1 -p 'press any key…'; echo; return 0
+    fi
     tmp="$(mktemp -d)"; f="$tmp/$(basename "$p")"
     if adb -s "$S" pull "$p" "$f" >/dev/null 2>&1; then
         if command -v preview >/dev/null; then preview "$f"; else less -R "$f" 2>/dev/null || cat "$f"; fi
@@ -184,9 +199,9 @@ view_file() {
 do_preview() {
     local p="$1" S="$SPECS_BROWSE_SERIAL" ext tmp
     if is_dir_in_cache "$p"; then
-        printf '📁 %s\n\n' "$p"; adb -s "$S" shell "ls -lAh '$p'" 2>&1; return 0
+        printf '📁 %s\n\n' "$p"; adb -s "$S" shell "ls -lAh $(shq "$p")" 2>&1; return 0
     fi
-    adb -s "$S" shell "ls -lh '$p'" 2>&1; echo
+    adb -s "$S" shell "ls -lh $(shq "$p")" 2>&1; echo
     ext="$(printf '%s' "${p##*.}" | tr '[:upper:]' '[:lower:]')"
     case "$ext" in
         png|jpg|jpeg|gif|bmp|webp|tif|tiff|ico|heic|heif|mp4|mov|webm|\
@@ -194,7 +209,7 @@ do_preview() {
             printf '[%s — binary, press Enter to open]\n' "$ext";;
         *)
             tmp="$(mktemp)"
-            adb -s "$S" exec-out "cat '$p'" 2>/dev/null | head -c 16384 > "$tmp"
+            adb -s "$S" exec-out "cat $(shq "$p")" 2>/dev/null | head -c 16384 > "$tmp"
             if [ -s "$tmp" ]; then cat -v "$tmp"; else printf '[no preview available]\n'; fi
             rm -f "$tmp";;
     esac
@@ -272,6 +287,7 @@ if ! "$self" --__crawl; then
     exit 1
 fi
 
+# NOTE: $self is embedded unquoted in the --bind actions below; assumes the script path contains no spaces.
 fzf --ansi --disabled --layout=reverse --height=100% \
     --delimiter=$'\t' --with-nth=2 \
     --header="📱 $S   $START"$'\n'"type=filter  Enter/Tab=open/expand  Ctrl-Y=pull→$PWD  Ctrl-R=refresh  Ctrl-E/W=expand/collapse-all  Esc=quit" \

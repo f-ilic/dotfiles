@@ -23,4 +23,8 @@ printf '/data\n' > "$tmp/expanded"
 exp_expanded=$'▾ /\n  ▾ data\n    ▸ app\n    ▸ system\n  ▸ vendor'
 got="$("$SB" --__render "" | cut -f2)"
 assert_eq "expanding /data reveals exactly one more level" "$exp_expanded" "$got"
+# the hidden abspath column (fzf {1}) must carry the real path, not blank
+row2_abspath="$("$SB" --__render "" | sed -n '2p' | cut -f1)"
+assert_eq "row 2 carries its absolute path in column 1" "/data" "$row2_abspath"
+
 finish
