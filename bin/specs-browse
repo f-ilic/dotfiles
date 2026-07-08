@@ -1,0 +1,164 @@
+#!/bin/bash
+# specs-browse — interactive fzf file browser for an ADB (Spectacles) device.
+#
+# Browse directories and preview files straight over `adb` — no device-side
+# install and no FUSE. Lightweight companion to specs-mount-fs (which mounts
+# the device via sshfs/FUSE instead).
+#
+#   Enter on a dir   → descend into it
+#   Enter on  ../    → go up a level
+#   Enter on a file  → preview it (reuses ~/bin/preview: chafa images, rich text)
+#   Ctrl-Y           → pull the highlighted entry into the current directory
+#   Esc / Ctrl-C     → quit
+#
+# Serial resolution order:
+#   -s SERIAL  >  $CV_SOC  >  auto-detect (prefers a *_cv transport)
+#              >  $ANDROID_SERIAL  >  first connected device
+#
+# The preview pane shells back into this same script via the hidden
+# --__preview subcommand (mirrors how specs-mount-fs uses --sftp-server).
+
+set -o pipefail
+
+self="$(command -v "$0" 2>/dev/null || printf '%s' "$0")"
+
+strip_classifier() { printf '%s' "${1%[/@*=|>]}"; }   # drop trailing `ls -F` mark
+
+join_path() {  # join_path <dir> <name>
+    case "$1" in */) printf '%s%s' "$1" "$2";; *) printf '%s/%s' "$1" "$2";; esac
+}
+
+do_treesort() {
+    # stdin: raw find output; stdout: normalized, unique, tree-ordered paths.
+    # Tree order = pre-order DFS with alphabetical siblings. Achieved by making
+    # the path separator sort before every other byte (translate '/' -> \001).
+    awk 'NF' \
+      | awk '{ gsub(/\/+/, "/"); if ($0 != "/") sub(/\/$/, ""); print }' \
+      | tr '/' '\001' \
+      | LC_ALL=C sort -u \
+      | tr '\001' '/'
+}
+
+# ─── hidden preview subcommand (invoked by fzf for the highlighted line) ──────
+if [ "$1" = "--__preview" ]; then
+    S="$SPECS_BROWSE_SERIAL"
+    dir="$SPECS_BROWSE_DIR"
+    raw="$2"
+    name="$(strip_classifier "$raw")"
+    path="$(join_path "$dir" "$name")"
+    case "$raw" in
+        ../)  printf '📁 %s\n\n' "$(dirname "$dir")"
+              adb -s "$S" shell "ls -lAh '$(dirname "$dir")'" 2>&1; exit 0;;
+        */)   printf '📁 %s\n\n' "$path"
+              adb -s "$S" shell "ls -lAh '$path'" 2>&1; exit 0;;
+        *@)   printf '🔗 symlink\n'
+              adb -s "$S" shell "ls -ld '$path'" 2>&1; exit 0;;
+    esac
+    # regular file: metadata, then a text peek (binaries are flagged, not dumped)
+    adb -s "$S" shell "ls -lh '$path'" 2>&1; echo
+    ext="$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]')"
+    case "$ext" in
+        png|jpg|jpeg|gif|bmp|webp|tif|tiff|ico|heic|heif|mp4|mov|webm|\
+        bin|so|a|o|zip|gz|tar|apk|jar|dex|odex|ttf|otf|pdf)
+            printf '[%s — binary, press Enter to open]\n' "$ext";;
+        *)
+            adb -s "$S" exec-out "cat '$path'" 2>/dev/null | head -c 16384 | cat -v
+            [ "${PIPESTATUS[0]}" -ne 0 ] && printf '\n[no preview available]\n';;
+    esac
+    exit 0
+fi
+
+# ─── self-subcommand dispatch (invoked by this script / fzf) ─────────────────
+case "${1:-}" in
+    --__treesort) do_treesort; exit $? ;;
+esac
+
+show_help() {
+    sed -n '2,/^$/{/^#!/d;s/^# \{0,1\}//;p;}' "$self"
+    cat <<EOF
+
+Usage: $(basename "$self") [-s SERIAL] [START_DIR]
+       $(basename "$self") -h | --help
+
+Defaults: START_DIR=/   serial=\$CV_SOC (currently: ${CV_SOC:-unset})
+EOF
+}
+
+# ─── argument parsing ─────────────────────────────────────────────────────────
+SERIAL=""; START="/"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)   show_help; exit 0;;
+        -s|--serial) SERIAL="$2"; shift 2;;
+        -*)          printf 'specs-browse: unknown option %s\n' "$1" >&2; exit 1;;
+        *)           START="$1"; shift;;
+    esac
+done
+
+# ─── pick a device ────────────────────────────────────────────────────────────
+pick_serial() {
+    [ -n "$SERIAL" ] && { printf '%s' "$SERIAL"; return; }
+    [ -n "$CV_SOC" ] && { printf '%s' "$CV_SOC"; return; }
+    local devs cv
+    devs="$(adb devices 2>/dev/null | awk 'NR>1 && $2=="device"{print $1}')"
+    cv="$(printf '%s\n' "$devs" | grep -m1 '_cv')"
+    [ -n "$cv" ] && { printf '%s' "$cv"; return; }
+    [ -n "$ANDROID_SERIAL" ] && { printf '%s' "$ANDROID_SERIAL"; return; }
+    printf '%s\n' "$devs" | head -1
+}
+
+command -v adb >/dev/null || { echo "specs-browse: adb not found" >&2; exit 1; }
+command -v fzf >/dev/null || { echo "specs-browse: fzf not found" >&2; exit 1; }
+
+S="$(pick_serial)"
+[ -z "$S" ] && { echo "specs-browse: no adb device found (try -s SERIAL)" >&2; exit 1; }
+adb -s "$S" shell true 2>/dev/null \
+    || { echo "specs-browse: device '$S' not reachable" >&2; exit 1; }
+
+# ─── pull a file to a temp dir and view it with ~/bin/preview ─────────────────
+view_file() {
+    local p="$1" tmp f
+    tmp="$(mktemp -d)"; f="$tmp/$(basename "$p")"
+    if adb -s "$S" pull "$p" "$f" >/dev/null 2>&1; then
+        if command -v preview >/dev/null; then preview "$f"
+        else less -R "$f" 2>/dev/null || cat "$f"; fi
+    else
+        printf 'could not pull %s\n' "$p"; read -rsn1 -p 'press any key…'; echo
+    fi
+    rm -rf "$tmp"
+}
+
+# ─── main browse loop ─────────────────────────────────────────────────────────
+export SPECS_BROWSE_SERIAL="$S"
+dir="$START"
+while :; do
+    export SPECS_BROWSE_DIR="$dir"
+    listing="$(adb -s "$S" shell "ls -1AF '$dir'" 2>/dev/null)"
+    out="$(printf '../\n%s\n' "$listing" | fzf \
+        --ansi --height=100% --layout=reverse --no-multi \
+        --header="📱 $S   $dir"$'\n'"Enter=open  Ctrl-Y=download→$PWD  Esc=quit" \
+        --expect=ctrl-y \
+        --preview="$self --__preview {}" \
+        --preview-window=right,58%,wrap)" || break   # Esc / Ctrl-C
+    key="$(printf '%s\n' "$out" | head -1)"
+    sel="$(printf '%s\n' "$out" | tail -n +2)"
+    [ -z "$sel" ] && break
+
+    if [ "$sel" = "../" ]; then dir="$(dirname "$dir")"; continue; fi
+    name="$(strip_classifier "$sel")"
+    path="$(join_path "$dir" "$name")"
+
+    if [ "$key" = "ctrl-y" ]; then
+        printf '↓ pulling %s → %s/\n' "$path" "$PWD"
+        adb -s "$S" pull "$path" . && echo "done." || echo "pull failed."
+        read -rsn1 -p 'press any key…'; echo
+        continue
+    fi
+
+    case "$sel" in
+        */) dir="$path";;                                      # directory
+        *@) if adb -s "$S" shell "[ -d '$path' ]" 2>/dev/null   # symlink
+                then dir="$path"; else view_file "$path"; fi;;
+        *)  view_file "$path";;                                 # file
+    esac
+done
