@@ -132,6 +132,78 @@ do_toggle() {
     return 0
 }
 
+build_prune_expr() {
+    # echo: -path A -o -path B ...   (input: space-separated roots)
+    local first=1 p out=""
+    for p in $1; do
+        if [ "$first" = 1 ]; then out="-path $p"; first=0; else out="$out -o -path $p"; fi
+    done
+    printf '%s' "$out"
+}
+
+spin() {
+    # spin <pid> <label>   (ASCII frames — bash 3.2 substrings are byte-wise)
+    local pid="$1" label="$2" frames='|/-\' i=0 n=4
+    while kill -0 "$pid" 2>/dev/null; do
+        i=$(( (i+1) % n ))
+        printf '\r%s %s ' "${frames:$i:1}" "$label" >&2
+        sleep 0.1
+    done
+    printf '\r\033[K' >&2
+}
+
+do_crawl() {
+    local root="${SPECS_BROWSE_ROOT:-/}" S="$SPECS_BROWSE_SERIAL"
+    local prune="${SPECS_BROWSE_PRUNE:-/proc /sys /dev /acct /apex /config}"
+    local expr tmp pid
+    expr="$(build_prune_expr "$prune")"
+    tmp="${SPECS_BROWSE_PATHS}.tmp"
+    ( adb -s "$S" shell "find '$root' \\( $expr \\) -prune -o -print" 2>/dev/null \
+        | "$self" --__treesort > "$tmp" ) &
+    pid=$!
+    spin "$pid" "crawling $S"
+    wait "$pid"
+    if [ -s "$tmp" ]; then mv "$tmp" "$SPECS_BROWSE_PATHS"; else rm -f "$tmp"; return 1; fi
+}
+
+do_pull() {
+    local p="$1" S="$SPECS_BROWSE_SERIAL"
+    printf '↓ pulling %s → %s/\n' "$p" "$PWD"
+    if adb -s "$S" pull "$p" . ; then echo "done."; else echo "pull failed."; fi
+    read -rsn1 -p 'press any key…'; echo
+}
+
+view_file() {
+    local p="$1" S="$SPECS_BROWSE_SERIAL" tmp f
+    tmp="$(mktemp -d)"; f="$tmp/$(basename "$p")"
+    if adb -s "$S" pull "$p" "$f" >/dev/null 2>&1; then
+        if command -v preview >/dev/null; then preview "$f"; else less -R "$f" 2>/dev/null || cat "$f"; fi
+    else
+        printf 'could not pull %s\n' "$p"; read -rsn1 -p 'press any key…'; echo
+    fi
+    rm -rf "$tmp"
+}
+
+do_preview() {
+    local p="$1" S="$SPECS_BROWSE_SERIAL" ext tmp
+    if is_dir_in_cache "$p"; then
+        printf '📁 %s\n\n' "$p"; adb -s "$S" shell "ls -lAh '$p'" 2>&1; return 0
+    fi
+    adb -s "$S" shell "ls -lh '$p'" 2>&1; echo
+    ext="$(printf '%s' "${p##*.}" | tr '[:upper:]' '[:lower:]')"
+    case "$ext" in
+        png|jpg|jpeg|gif|bmp|webp|tif|tiff|ico|heic|heif|mp4|mov|webm|\
+        bin|so|a|o|zip|gz|tar|apk|jar|dex|odex|ttf|otf|pdf)
+            printf '[%s — binary, press Enter to open]\n' "$ext";;
+        *)
+            tmp="$(mktemp)"
+            adb -s "$S" exec-out "cat '$p'" 2>/dev/null | head -c 16384 > "$tmp"
+            if [ -s "$tmp" ]; then cat -v "$tmp"; else printf '[no preview available]\n'; fi
+            rm -f "$tmp";;
+    esac
+    return 0
+}
+
 # ─── hidden preview subcommand (invoked by fzf for the highlighted line) ──────
 if [ "$1" = "--__preview" ]; then
     S="$SPECS_BROWSE_SERIAL"
@@ -168,6 +240,9 @@ case "${1:-}" in
     --__expand-all)  do_expand_all; exit $? ;;
     --__act)         shift; do_act "${1:-}"; exit $? ;;
     --__toggle)      shift; do_toggle "${1:-}"; exit $? ;;
+    --__prune-expr)  shift; build_prune_expr "${1:-}"; exit $? ;;
+    --__crawl)       do_crawl; exit $? ;;
+    --__pull)        shift; do_pull "${1:-}"; exit $? ;;
 esac
 
 show_help() {
