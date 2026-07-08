@@ -1,14 +1,17 @@
 #!/bin/bash
-# specs-browse — interactive fzf file browser for an ADB (Spectacles) device.
+# specs-browse — searchable collapsible filetree for an ADB (Spectacles) device.
 #
-# Browse directories and preview files straight over `adb` — no device-side
-# install and no FUSE. Lightweight companion to specs-mount-fs (which mounts
-# the device via sshfs/FUSE instead).
+# Browse and preview files straight over `adb` — no device-side install and no
+# FUSE. Lightweight companion to specs-mount-fs (which mounts the device via
+# sshfs/FUSE instead). ROOT is crawled once up front, then the whole tree is
+# filtered locally as you type (ancestors of matches stay visible).
 #
-#   Enter on a dir   → descend into it
-#   Enter on  ../    → go up a level
-#   Enter on a file  → preview it (reuses ~/bin/preview: chafa images, rich text)
+#   type             → fuzzy-filter the whole tree (matches keep their parents)
+#   Tab              → expand / collapse the highlighted dir (no-op on files)
+#   Enter            → open the highlighted file (via ~/bin/preview) / toggle dir
 #   Ctrl-Y           → pull the highlighted entry into the current directory
+#   Ctrl-R           → re-crawl the device
+#   Ctrl-E / Ctrl-W  → expand-all / collapse-all
 #   Esc / Ctrl-C     → quit
 #
 # Serial resolution order:
@@ -21,12 +24,6 @@
 set -o pipefail
 
 self="$(command -v "$0" 2>/dev/null || printf '%s' "$0")"
-
-strip_classifier() { printf '%s' "${1%[/@*=|>]}"; }   # drop trailing `ls -F` mark
-
-join_path() {  # join_path <dir> <name>
-    case "$1" in */) printf '%s%s' "$1" "$2";; *) printf '%s/%s' "$1" "$2";; esac
-}
 
 do_treesort() {
     # stdin: raw find output; stdout: normalized, unique, tree-ordered paths.
@@ -204,35 +201,6 @@ do_preview() {
     return 0
 }
 
-# ─── hidden preview subcommand (invoked by fzf for the highlighted line) ──────
-if [ "$1" = "--__preview" ]; then
-    S="$SPECS_BROWSE_SERIAL"
-    dir="$SPECS_BROWSE_DIR"
-    raw="$2"
-    name="$(strip_classifier "$raw")"
-    path="$(join_path "$dir" "$name")"
-    case "$raw" in
-        ../)  printf '📁 %s\n\n' "$(dirname "$dir")"
-              adb -s "$S" shell "ls -lAh '$(dirname "$dir")'" 2>&1; exit 0;;
-        */)   printf '📁 %s\n\n' "$path"
-              adb -s "$S" shell "ls -lAh '$path'" 2>&1; exit 0;;
-        *@)   printf '🔗 symlink\n'
-              adb -s "$S" shell "ls -ld '$path'" 2>&1; exit 0;;
-    esac
-    # regular file: metadata, then a text peek (binaries are flagged, not dumped)
-    adb -s "$S" shell "ls -lh '$path'" 2>&1; echo
-    ext="$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]')"
-    case "$ext" in
-        png|jpg|jpeg|gif|bmp|webp|tif|tiff|ico|heic|heif|mp4|mov|webm|\
-        bin|so|a|o|zip|gz|tar|apk|jar|dex|odex|ttf|otf|pdf)
-            printf '[%s — binary, press Enter to open]\n' "$ext";;
-        *)
-            adb -s "$S" exec-out "cat '$path'" 2>/dev/null | head -c 16384 | cat -v
-            [ "${PIPESTATUS[0]}" -ne 0 ] && printf '\n[no preview available]\n';;
-    esac
-    exit 0
-fi
-
 # ─── self-subcommand dispatch (invoked by this script / fzf) ─────────────────
 case "${1:-}" in
     --__treesort)    do_treesort; exit $? ;;
@@ -243,16 +211,20 @@ case "${1:-}" in
     --__prune-expr)  shift; build_prune_expr "${1:-}"; exit $? ;;
     --__crawl)       do_crawl; exit $? ;;
     --__pull)        shift; do_pull "${1:-}"; exit $? ;;
+    --__preview)     shift; do_preview "${1:-}"; exit $? ;;
 esac
 
 show_help() {
     sed -n '2,/^$/{/^#!/d;s/^# \{0,1\}//;p;}' "$self"
     cat <<EOF
 
-Usage: $(basename "$self") [-s SERIAL] [START_DIR]
+Usage: $(basename "$self") [-s SERIAL] [ROOT]
        $(basename "$self") -h | --help
 
-Defaults: START_DIR=/   serial=\$CV_SOC (currently: ${CV_SOC:-unset})
+Defaults: ROOT=/ (crawled once, minus \$SPECS_BROWSE_PRUNE)
+          prune=${SPECS_BROWSE_PRUNE:-/proc /sys /dev /acct /apex /config}
+          serial=\$CV_SOC (currently: ${CV_SOC:-unset})
+Pass a narrower ROOT (e.g. $(basename "$self") /sys) to scope the crawl.
 EOF
 }
 
@@ -287,50 +259,29 @@ S="$(pick_serial)"
 adb -s "$S" shell true 2>/dev/null \
     || { echo "specs-browse: device '$S' not reachable" >&2; exit 1; }
 
-# ─── pull a file to a temp dir and view it with ~/bin/preview ─────────────────
-view_file() {
-    local p="$1" tmp f
-    tmp="$(mktemp -d)"; f="$tmp/$(basename "$p")"
-    if adb -s "$S" pull "$p" "$f" >/dev/null 2>&1; then
-        if command -v preview >/dev/null; then preview "$f"
-        else less -R "$f" 2>/dev/null || cat "$f"; fi
-    else
-        printf 'could not pull %s\n' "$p"; read -rsn1 -p 'press any key…'; echo
-    fi
-    rm -rf "$tmp"
-}
-
-# ─── main browse loop ─────────────────────────────────────────────────────────
+# ─── tree engine ─────────────────────────────────────────────────────────────
+STATE="$(mktemp -d)"; trap 'rm -rf "$STATE"' EXIT
 export SPECS_BROWSE_SERIAL="$S"
-dir="$START"
-while :; do
-    export SPECS_BROWSE_DIR="$dir"
-    listing="$(adb -s "$S" shell "ls -1AF '$dir'" 2>/dev/null)"
-    out="$(printf '../\n%s\n' "$listing" | fzf \
-        --ansi --height=100% --layout=reverse --no-multi \
-        --header="📱 $S   $dir"$'\n'"Enter=open  Ctrl-Y=download→$PWD  Esc=quit" \
-        --expect=ctrl-y \
-        --preview="$self --__preview {}" \
-        --preview-window=right,58%,wrap)" || break   # Esc / Ctrl-C
-    key="$(printf '%s\n' "$out" | head -1)"
-    sel="$(printf '%s\n' "$out" | tail -n +2)"
-    [ -z "$sel" ] && break
+export SPECS_BROWSE_ROOT="$START"
+export SPECS_BROWSE_PATHS="$STATE/paths"
+export SPECS_BROWSE_EXPANDED="$STATE/expanded"
+: > "$SPECS_BROWSE_EXPANDED"
 
-    if [ "$sel" = "../" ]; then dir="$(dirname "$dir")"; continue; fi
-    name="$(strip_classifier "$sel")"
-    path="$(join_path "$dir" "$name")"
+if ! "$self" --__crawl; then
+    echo "specs-browse: nothing found under $START (device unreachable or empty)" >&2
+    exit 1
+fi
 
-    if [ "$key" = "ctrl-y" ]; then
-        printf '↓ pulling %s → %s/\n' "$path" "$PWD"
-        adb -s "$S" pull "$path" . && echo "done." || echo "pull failed."
-        read -rsn1 -p 'press any key…'; echo
-        continue
-    fi
-
-    case "$sel" in
-        */) dir="$path";;                                      # directory
-        *@) if adb -s "$S" shell "[ -d '$path' ]" 2>/dev/null   # symlink
-                then dir="$path"; else view_file "$path"; fi;;
-        *)  view_file "$path";;                                 # file
-    esac
-done
+fzf --ansi --disabled --layout=reverse --height=100% \
+    --delimiter=$'\t' --with-nth=2 \
+    --header="📱 $S   $START"$'\n'"type=filter  Enter/Tab=open/expand  Ctrl-Y=pull→$PWD  Ctrl-R=refresh  Ctrl-E/W=expand/collapse-all  Esc=quit" \
+    --bind "start:reload($self --__render {q})" \
+    --bind "change:reload($self --__render {q})" \
+    --bind "enter:execute($self --__act {1})+reload($self --__render {q})" \
+    --bind "tab:execute-silent($self --__toggle {1})+reload($self --__render {q})" \
+    --bind "ctrl-y:execute($self --__pull {1})+reload($self --__render {q})" \
+    --bind "ctrl-r:execute($self --__crawl)+reload($self --__render {q})" \
+    --bind "ctrl-e:execute-silent($self --__expand-all)+reload($self --__render {q})" \
+    --bind "ctrl-w:execute-silent(: > \"$SPECS_BROWSE_EXPANDED\")+reload($self --__render {q})" \
+    --preview "$self --__preview {1}" \
+    --preview-window=right,58%,wrap
