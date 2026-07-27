@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+specs-port — open an interactive nrf_shell session on a Spectacles device
+
+Usage:
+  specs-port [nrf_shell args...]
+
+Finds the UART console port and drops you into nrf_shell.
+If multiple devices are connected, prompts you to pick one.
+Any extra arguments are passed through to nrf_shell.
+
+Examples:
+  specs-port
+  specs-port --commands "ina231_dump --board ar2"
+EOF
+  exit 0
+fi
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+command -v ioreg >/dev/null 2>&1 \
+    || die "ioreg not found; this script requires macOS"
+
+ports=()
+while IFS= read -r loc_hex; do
+    loc_hex=$(printf '%s' "$loc_hex" | sed 's/0*$//; s/^0*//')
+    [[ -n "$loc_hex" ]] || continue
+    port="/dev/cu.usbmodem${loc_hex}02"
+    [[ -c "$port" ]] && ports+=("$port")
+done < <(ioreg -p IOUSB -w0 | grep -oi 'spectacles@[0-9a-fA-F]*' | sed 's/.*@//')
+
+port=""
+case ${#ports[@]} in
+    0)
+        die "No Spectacles device found. Is it connected?"
+        ;;
+    1)
+        port="${ports[0]}"
+        ;;
+    *)
+        echo "Multiple Spectacles devices found:" >&2
+        for i in "${!ports[@]}"; do
+            echo "  $((i+1))) ${ports[$i]}" >&2
+        done
+        printf "Pick [1-%d]: " "${#ports[@]}" >&2
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#ports[@]} )); then
+            port="${ports[$((choice-1))]}"
+        else
+            die "Invalid selection."
+        fi
+        ;;
+esac
+
+echo "Connecting to $port..." >&2
+exec nrf_shell --uart "$port" "$@"
