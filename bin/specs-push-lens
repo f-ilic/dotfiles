@@ -3,93 +3,91 @@ set -e
 
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   cat <<'EOF'
-specs-push-lens — Push a lens folder or .zip to an Android device via adb
+specs-push-lens-spk — Push and install a .spk package on a device via adb
 
 Usage:
-  specs-push-lens <lens-folder|lens.zip> [lens-name] [adb-serial]
+  specs-push-lens-spk <package.spk> [name] [--pkg-id <id>]
 
 Arguments:
-  lens-folder|lens.zip  Path to the lens directory or a zipped lens.
-  lens-name             Name to install the lens under (defaults to folder/zip name).
-  adb-serial            ADB device serial. Prefix with _ to match by suffix
-                        (e.g. _cv). Defaults to the first connected device.
+  package.spk    Path to the .spk file to install.
+  name           Package name to install under (defaults to filename without .spk).
+  --pkg-id <id>  Override the pkg_id inside the SPK manifest before installing.
+                 Use this to install a debug and release build side by side when
+                 they share the same pkg_id.
+
+Environment:
+  APP   ADB serial of the target device. Auto-detected if not set.
 
 Examples:
-  specs-push-lens ./MyLens
-  specs-push-lens ./MyLens.zip my-lens 41201B1X35010011_app
-  specs-push-lens ./MyLens "" _cv
+  specs-push-lens-spk ./Activity.spk
+  specs-push-lens-spk ./UserActivity-debug.spk debug --pkg-id com.example.useracitvity.debug
 EOF
   exit 0
 fi
 
 if [ -z "$1" ]; then
-  echo "Please pass path to lens folder as a parameter"
+  echo "Usage: $0 spk-file [name] [--pkg-id <id>]"
   exit 1
 fi
-LENS_DIR=$1
-LENS_PATH=$(echo "$LENS_DIR" | sed 's:/*$::')
 
-LENS_NAME="$2"
+SPK_PATH="$1"
+SPK_BASENAME="${SPK_PATH##*/}"
+SPK_NAME="${SPK_BASENAME%.spk}"
 
-# Default to first connected ADB device
-if [[ "$3" == "" ]]; then
-  ADB_DEVICE=$(adb devices | tail -n +1 | head -n 2 | cut -sf 1)
-elif [[ "$3" == _* ]]; then
-  ADB_DEVICE=$(adb devices | grep "$3" | cut -sf 1)
+NAME="${2:-$SPK_NAME}"
+PKG_ID=""
+
+# Parse --pkg-id
+shift; shift 2>/dev/null || true
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pkg-id) PKG_ID="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+if [ ! -f "$SPK_PATH" ]; then
+  echo "Error: File $SPK_PATH not found"
+  exit 1
+fi
+
+# Patch pkg_id inside the SPK if requested
+PATCHED_SPK=""
+if [ -n "$PKG_ID" ]; then
+  TMPDIR=$(mktemp -d)
+  PATCHED_SPK=$(mktemp).spk
+  unzip -q "$SPK_PATH" -d "$TMPDIR"
+  python3 - "$TMPDIR/manifest.json" "$PKG_ID" <<'PYEOF'
+import json, sys
+path, new_id = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    m = json.load(f)
+old_id = m.get("pkg_id", "")
+m["pkg_id"] = new_id
+with open(path, "w") as f:
+    json.dump(m, f, indent=4)
+print(f"Patched pkg_id: {old_id} -> {new_id}", flush=True)
+PYEOF
+  (cd "$TMPDIR" && zip -0 -q "$PATCHED_SPK" manifest.json pkg.zip signedPackage.json)
+  rm -rf "$TMPDIR"
+  SPK_PATH="$PATCHED_SPK"
+  SPK_BASENAME="${SPK_NAME}-patched.spk"
+fi
+
+# Detect device
+if [ -z "$APP" ]; then
+  APP=$(adb devices | tail -n +2 | grep -v '^$' | head -n 1 | cut -f 1)
+  if [ -z "$APP" ]; then
+    echo "Error: No device found"
+    [ -n "$PATCHED_SPK" ] && rm -f "$PATCHED_SPK"
+    exit 1
+  fi
+  echo "Auto-detected device: $APP"
 else
-  # User specified which device they want to use
-  ADB_DEVICE="$3"
+  echo "Using device: $APP"
 fi
 
-SAVEIFS=$IFS
-IFS=$'\n'
-IFS=$SAVEIFS
+adb -s $APP push "$SPK_PATH" /data/local/$SPK_BASENAME
+adb -s $APP shell pkg install --packageFormat SPK --filePath /data/local/$SPK_BASENAME --name "$NAME"
 
-push_lens() {
-  local lensName="$1"
-  local sourcePath="$2"
-  local lensesPath="/sdcard/hermosa/lenses"
-  local lensesTempDir="$lensesPath/tmp"
-  local lensesTempPath="$lensesTempDir/$lensName"
-  local targetPath="$lensesPath/$lensName/"
-
-  echo "Push lens $lensName from $sourcePath to $targetPath"
-
-  echo "Clear and create directories"
-  adb -s $ADB_DEVICE shell -- rm -rf "${targetPath}"
-  adb -s $ADB_DEVICE shell -- rm -rf "$lensesTempPath/*"
-  adb -s $ADB_DEVICE shell -- mkdir -p "$targetPath"
-  adb -s $ADB_DEVICE shell -- mkdir -p "$lensesTempPath"
-
-  echo "Push source $sourcePath to $lensesTempPath"
-  adb -s $ADB_DEVICE push "$sourcePath" "$lensesTempPath"
-
-  echo "Copy $lensesTempPath to $targetPath"
-  adb -s $ADB_DEVICE shell "cd '$lensesTempPath/${sourcePath##*/}/' && mv -v * '$targetPath'"
-
-  echo "Remove the tmp dir $lensesTempDir"
-  adb -s $ADB_DEVICE shell -- rm -rf "$lensesTempDir"
-}
-
-if [[ -d $LENS_PATH ]]; then
-  if [[ -z $LENS_NAME ]]; then
-    LENS_NAME="${LENS_PATH##*/}"
-  fi
-  push_lens "$LENS_NAME" "$LENS_PATH"
-elif [[ $LENS_PATH == *.zip ]]; then
-  lensFileName="${LENS_PATH##*/}"
-  unzipDir="${lensFileName%.*}"
-  if [[ -z $LENS_NAME ]]; then
-    LENS_NAME="$unzipDir"
-  fi
-  sourceDir=$(dirname "${LENS_PATH}")/tmp
-  echo "unpack $LENS_PATH to $sourceDir"
-  unzip -o "$LENS_PATH" -d "$sourceDir"
-  if [[ $? != 0 ]]; then
-    echo "Lens was not unpacked"
-    exit 4
-  fi
-  push_lens "$LENS_NAME" "$sourceDir"
-  echo "remove temp dir $sourceDir"
-  rm -r "$sourceDir"
-fi
+[ -n "$PATCHED_SPK" ] && rm -f "$PATCHED_SPK"
