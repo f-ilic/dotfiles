@@ -3,17 +3,29 @@
 # requires-python = ">=3.10"
 # dependencies = ["textual>=0.50"]
 # ///
-"""specs-remount — adb root / disable-verity / remount for Spectacles devices."""
+"""specs-unlock - run Spectacles ADB unlock/remount commands in user-chosen order."""
+
+from __future__ import annotations
 
 import os
 import queue
+import shlex
 import subprocess
 import sys
-import threading
+from collections.abc import Iterable
 
 for _p in ("/opt/homebrew/bin", "/usr/local/bin"):
     if os.path.isdir(_p) and _p not in os.environ.get("PATH", ""):
         os.environ["PATH"] = _p + ":" + os.environ["PATH"]
+
+
+COMMANDS: dict[str, tuple[str, ...]] = {
+    "root": ("root",),
+    "disable-verity": ("disable-verity",),
+    "reboot": ("reboot",),
+    "wait-for-device": ("wait-for-device",),
+    "remount": ("remount",),
+}
 
 
 def adb_devices() -> list[tuple[str, str]]:
@@ -30,13 +42,116 @@ def adb_devices() -> list[tuple[str, str]]:
     return out
 
 
-def run_tui() -> None:
-    from textual.app import App, ComposeResult
+def resolve_suffix(suffix: str) -> str:
+    for serial, _ in adb_devices():
+        if serial.endswith(suffix):
+            return serial
+    return ""
+
+
+def build_adb_command(serial: str, command_name: str) -> list[str]:
+    cmd = ["adb"]
+    if serial:
+        cmd.extend(["-s", serial])
+    cmd.extend(COMMANDS[command_name])
+    return cmd
+
+
+def format_command(cmd: Iterable[str]) -> str:
+    return " ".join(shlex.quote(part) for part in cmd)
+
+
+def parse_cli(argv: list[str]) -> tuple[str, list[str], bool]:
+    serial = os.environ.get("CV_SOC", "")
+    commands: list[str] = []
+    launch_tui = False
+    i = 0
+
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            print_help()
+            sys.exit(0)
+        if arg in ("-s", "--serial"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{arg} requires a serial")
+            serial = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--suffix":
+            if i + 1 >= len(argv):
+                raise SystemExit("--suffix requires a value")
+            serial = resolve_suffix(argv[i + 1])
+            if not serial:
+                raise SystemExit(f"No connected ADB device matches suffix: {argv[i + 1]}")
+            i += 2
+            continue
+        if arg == "--tui":
+            launch_tui = True
+            i += 1
+            continue
+        if arg in COMMANDS:
+            commands.append(arg)
+            i += 1
+            continue
+        if not commands:
+            if arg.startswith("_"):
+                serial = resolve_suffix(arg)
+                if not serial:
+                    raise SystemExit(f"No connected ADB device matches suffix: {arg}")
+            else:
+                serial = arg
+            i += 1
+            continue
+        known = ", ".join(COMMANDS)
+        raise SystemExit(f"Unknown command or argument: {arg}\nKnown commands: {known}")
+
+    return serial, commands, launch_tui
+
+
+def print_help() -> None:
+    print(
+        """specs-unlock - Run Spectacles ADB unlock/remount commands
+
+Usage:
+  specs-unlock
+  specs-unlock [adb-serial|_suffix]
+  specs-unlock [adb-serial|_suffix] <command> [command...]
+  specs-unlock [--serial SERIAL|--suffix SUFFIX] <command> [command...]
+
+Commands:
+  root
+  disable-verity
+  reboot
+  wait-for-device
+  remount
+
+Examples:
+  specs-unlock
+  specs-unlock disable-verity reboot wait-for-device root remount
+  specs-unlock _cv root remount
+"""
+    )
+
+
+def run_cli(serial: str, commands: list[str]) -> None:
+    for command_name in commands:
+        cmd = build_adb_command(serial, command_name)
+        print(f"+ {format_command(cmd)}", flush=True)
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+
+
+def run_tui(initial_serial: str = "") -> None:
+    from rich.markup import escape
+    from textual import on
+    from textual.app import App, ComposeResult, SuspendNotSupported
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
     from textual.widgets import Button, Footer, Header, Label, RichLog, Static, Switch
 
-    class RemountApp(App):
+    class UnlockApp(App):
         CSS = """
         Screen { background: $surface; }
         #body { padding: 2 4; height: 1fr; }
@@ -51,9 +166,9 @@ def run_tui() -> None:
 
         BINDINGS = [
             Binding("ctrl+a", "select_all", "Select All"),
-            Binding("ctrl+r", "reload",     "Reload devices"),
-            Binding("ctrl+q", "quit",       "Quit"),
-            Binding("escape", "quit",       "Quit", show=False),
+            Binding("ctrl+r", "reload", "Reload devices"),
+            Binding("ctrl+q", "quit", "Quit"),
+            Binding("escape", "quit", "Quit", show=False),
         ]
 
         def compose(self) -> ComposeResult:
@@ -63,20 +178,25 @@ def run_tui() -> None:
                 yield Vertical(id="devices")
                 yield Static("Run on selected devices", classes="heading")
                 with Horizontal(id="actions"):
-                    yield Button("adb root",           id="btn-root",    variant="default")
-                    yield Button("adb disable-verity", id="btn-verity",  variant="default")
-                    yield Button("adb remount",        id="btn-remount", variant="default")
+                    yield Button("adb root", id="btn-root", variant="default")
+                    yield Button("adb disable-verity", id="btn-disable-verity", variant="default")
+                    yield Button("adb reboot", id="btn-reboot", variant="default")
+                    yield Button("adb wait-for-device", id="btn-wait-for-device", variant="default")
+                    yield Button("adb remount", id="btn-remount", variant="default")
                 yield Static("Output", classes="heading")
                 yield RichLog(id="log", markup=True, highlight=True, auto_scroll=True)
             yield Footer()
 
         def on_mount(self) -> None:
-            self.title = "specs-remount"
+            self.title = "specs-unlock"
             self._selected: set[str] = set()
             self._devices: list[tuple[str, str]] = []
-            self._running = False
-            self._q: queue.Queue = queue.Queue()
+            self._command_running = False
+            self._q: queue.Queue[str] = queue.Queue()
+            if initial_serial:
+                self._selected.add(initial_serial)
             self.set_interval(0.05, self._drain_log)
+            self.call_after_refresh(lambda: self._write_log("[dim]Ready[/dim]"))
             self.call_after_refresh(lambda: self._load_devices(initial=True))
 
         def _drain_log(self) -> None:
@@ -87,22 +207,26 @@ def run_tui() -> None:
                 except queue.Empty:
                     break
 
+        def _write_log(self, message: str) -> None:
+            self.query_one("#log", RichLog).write(message)
+
         def _load_devices(self, initial: bool = False) -> None:
             container = self.query_one("#devices", Vertical)
             container.remove_children()
             self._devices = adb_devices()
+            if initial and not self._selected and os.environ.get("CV_SOC"):
+                self._selected.add(os.environ["CV_SOC"])
             if not self._devices:
-                container.mount(Static("[red]No ADB devices found — Ctrl+R to retry[/red]"))
+                container.mount(Static("[red]No ADB devices found - Ctrl+R to retry[/red]"))
                 return
-            cv_soc = os.environ.get("CV_SOC", "")
-            if initial and cv_soc:
-                self._selected.add(cv_soc)
             for serial, model in self._devices:
-                container.mount(Horizontal(
-                    Switch(value=(serial in self._selected), id=f"sw-{serial}"),
-                    Label(f"  {serial}  [dim]{model}[/dim]"),
-                    classes="device-row",
-                ))
+                container.mount(
+                    Horizontal(
+                        Switch(value=(serial in self._selected), id=f"sw-{serial}"),
+                        Label(f"  {serial}  [dim]{model}[/dim]"),
+                        classes="device-row",
+                    )
+                )
 
         def on_switch_changed(self, event: Switch.Changed) -> None:
             event.stop()
@@ -114,49 +238,78 @@ def run_tui() -> None:
                 else:
                     self._selected.discard(serial)
 
-        def on_button_pressed(self, event: Button.Pressed) -> None:
+        @on(Button.Pressed)
+        def handle_button_pressed(self, event: Button.Pressed) -> None:
             mapping = {
-                "btn-root":    "root",
-                "btn-verity":  "disable-verity",
+                "btn-root": "root",
+                "btn-disable-verity": "disable-verity",
+                "btn-reboot": "reboot",
+                "btn-wait-for-device": "wait-for-device",
                 "btn-remount": "remount",
             }
-            cmd = mapping.get(event.button.id or "")
-            if cmd:
-                self._run_adb(cmd)
+            command_name = mapping.get(event.button.id or "")
+            if command_name:
+                self._run_adb(command_name)
 
-        def _run_adb(self, adb_cmd: str) -> None:
-            if self._running:
+        def _run_adb(self, command_name: str) -> None:
+            if self._command_running:
+                self._write_log("[yellow]A command is already running.[/yellow]")
                 return
-            if not self._selected:
-                self._q.put("[yellow]No devices selected — toggle at least one device.[/yellow]")
-                return
-            self._running = True
-            serials = list(self._selected)
-            q = self._q
+            self._command_running = True
+            serials = [serial for serial, _ in self._devices if serial in self._selected]
+            serials.extend(sorted(self._selected - set(serials)))
+            if not serials:
+                serials = [""]
+                self._write_log("[yellow]No device selected - running adb without -s.[/yellow]")
+                self._q.put("[yellow]No device selected - running adb without -s.[/yellow]")
 
-            def worker() -> None:
-                from rich.markup import escape
-                q.put(f"\n[bold]adb {adb_cmd}[/bold]  [{', '.join(serials)}]")
-                results: dict[str, str] = {}
-                lock = threading.Lock()
+            clicked_text = f"clicked: {command_name}"
+            self._write_log(f"[dim]{escape(clicked_text)}[/dim]")
 
-                def do(serial: str) -> None:
-                    r = subprocess.run(
-                        ["adb", "-s", serial, adb_cmd],
-                        capture_output=True, text=True,
-                    )
-                    with lock:
-                        results[serial] = (r.stdout + r.stderr).strip()
-
-                threads = [threading.Thread(target=do, args=(s,)) for s in serials]
-                for t in threads: t.start()
-                for t in threads: t.join()
-
+            def run_commands() -> None:
+                print(clicked_text, flush=True)
                 for serial in serials:
-                    q.put(f"  [dim]{serial}[/dim]  {escape(results.get(serial, ''))}")
-                self._running = False
+                    cmd = build_adb_command(serial, command_name)
+                    command_text = f"+ {format_command(cmd)}"
+                    print(command_text, flush=True)
+                    self._q.put(f"[bold cyan]{escape(command_text)}[/bold cyan]")
+                    try:
+                        proc = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1,
+                        )
+                    except FileNotFoundError:
+                        message = "adb not found"
+                        print(message, file=sys.stderr, flush=True)
+                        self._q.put(f"[red]{message}[/red]")
+                        continue
 
-            threading.Thread(target=worker, daemon=True).start()
+                    if proc.stdout is not None:
+                        for line in proc.stdout:
+                            text = line.rstrip()
+                            print(text, flush=True)
+                            self._q.put(escape(text))
+                    rc = proc.wait()
+                    exit_text = f"exit {rc}"
+                    print(exit_text, flush=True)
+                    style = "green" if rc == 0 else "red"
+                    self._q.put(f"[{style}]{exit_text}[/{style}]")
+
+            try:
+                try:
+                    with self.suspend():
+                        run_commands()
+                except SuspendNotSupported:
+                    self._q.put(
+                        "[yellow]Terminal suspend is not supported; output will stay in the app.[/yellow]"
+                    )
+                    run_commands()
+            finally:
+                self._command_running = False
+                self._drain_log()
 
         def action_select_all(self) -> None:
             all_serials = {s for s, _ in self._devices}
@@ -171,11 +324,19 @@ def run_tui() -> None:
             self._selected.clear()
             self._load_devices()
 
-    RemountApp().run()
+    UnlockApp().run()
 
 
 if __name__ == "__main__":
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print("specs-remount — adb root / disable-verity / remount\n\nRun with no args to launch TUI.")
-        sys.exit(0)
-    run_tui()
+    try:
+        serial_arg, command_args, tui_requested = parse_cli(sys.argv[1:])
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            print(exc, file=sys.stderr)
+            sys.exit(2)
+        raise
+
+    if command_args and not tui_requested:
+        run_cli(serial_arg, command_args)
+    else:
+        run_tui(serial_arg)

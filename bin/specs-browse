@@ -290,7 +290,7 @@ fi
 # NOTE: $self is embedded unquoted in the --bind actions below; assumes the script path contains no spaces.
 fzf --ansi --disabled --layout=reverse --height=100% \
     --delimiter=$'\t' --with-nth=2 \
-    --header="📱 $S   $START"$'\n'"type=filter  Enter/Tab=open/expand  Ctrl-Y=pull→$PWD  Ctrl-R=refresh  Ctrl-E/W=expand/collapse-all  Esc=quit" \
+    --header="$S   $START"$'\n'"type=filter  Enter/Tab=open/expand  Ctrl-Y=pull->$PWD  Ctrl-R=refresh  Ctrl-E/W=expand/collapse-all  Esc=quit" \
     --bind "start:reload($self --__render {q})" \
     --bind "change:reload($self --__render {q})" \
     --bind "enter:execute($self --__act {1})+reload($self --__render {q})" \
