@@ -14,25 +14,26 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
 fi
 
 # Create the session detached with the first window named 'main'
-tmux new-session -d -s "$SESSION_NAME" -n main
+MAIN_LEFT=$(tmux new-session -d -s "$SESSION_NAME" -n main -P -F '#{pane_id}')
+
+# ----- main window (split left/right) -----
+tmux split-window -h -t "$MAIN_LEFT"    # left/right split
 
 # ----- files window (split left/right) -----
 tmux new-window -t "$SESSION_NAME:" -n files
-tmux select-window -t "$SESSION_NAME:files"
-tmux split-window -h    # left/right split
+tmux split-window -h -t "$SESSION_NAME:files"    # left/right split
 
 # ----- monitor window (3 panes: left | top-right / bottom-right) -----
 tmux new-window -t "$SESSION_NAME:" -n monitor
-tmux select-window -t "$SESSION_NAME:monitor"
-tmux split-window -h    # create left | right
-tmux select-pane -R     # focus the right pane
-tmux split-window -v    # split right into top/bottom
+MONITOR_RIGHT=$(tmux split-window -h -P -F '#{pane_id}' -t "$SESSION_NAME:monitor")
+tmux split-window -v -t "$MONITOR_RIGHT"    # split right into top/bottom
 
 # ----- git window (no splits) -----
 tmux new-window -t "$SESSION_NAME:" -n git
 
-# Return focus to 'main' when attaching
+# Return focus to 'main' (left pane) when attaching
 tmux select-window -t "$SESSION_NAME:main"
+tmux select-pane -t "$MAIN_LEFT"
 
 # Attach to the new session
 exec tmux attach -t "$SESSION_NAME"
