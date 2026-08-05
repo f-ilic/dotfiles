@@ -137,18 +137,40 @@ class FieldRow(EditableRow):
 
 
 class BoolRow(EditableRow):
-    """A boolean leaf rendered with Textual's default Switch widget."""
+    """A boolean leaf: compact inline Switch + a True/False state label.
+
+    The Switch's ``tall`` border is stripped (base and :focus) so the row
+    stays one line high; the state label makes the current value explicit.
+    """
 
     DEFAULT_CSS = """
     BoolRow {
-        height: 3;
+        height: 1;
     }
     BoolRow:focus-within {
         background: $boost;
     }
     BoolRow Label {
         color: $text-muted;
-        padding-top: 1;
+    }
+    BoolRow Switch {
+        border: none;
+        height: 1;
+        width: auto;
+        padding: 0;
+        margin: 0 1 0 0;
+        background: transparent;
+    }
+    BoolRow Switch:focus {
+        border: none;
+        background: transparent;
+    }
+    BoolRow .bool-state {
+        width: auto;
+        color: $text-muted;
+    }
+    BoolRow .bool-state.-on {
+        color: $success;
     }
     """
 
@@ -156,6 +178,16 @@ class BoolRow(EditableRow):
         indent = " " * (self._depth * INDENT)
         yield Label(f"{indent}{self._label}", markup=False)
         yield Switch(value=self._value)
+        yield Static(
+            "True" if self._value else "False",
+            classes="bool-state -on" if self._value else "bool-state",
+            markup=False,
+        )
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        state = self.query_one(".bool-state", Static)
+        state.update("True" if event.value else "False")
+        state.set_class(event.value, "-on")
 
     def result_value(self) -> bool:
         return self.query_one(Switch).value
