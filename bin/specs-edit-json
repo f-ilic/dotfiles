@@ -17,7 +17,7 @@ from typing import Any, Generator
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static, Switch
 
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
@@ -62,7 +62,41 @@ class SectionRow(Static):
         super().__init__(f"{indent}{label}")
 
 
-class FieldRow(Horizontal):
+class EditableRow(Horizontal):
+    """Base for rows holding a single editable leaf value.
+
+    Subclasses render an inner focusable widget and expose the final value
+    via ``result_value()``; the app iterates ``EditableRow`` generically for
+    navigation and push, so it doesn't care whether a row is text or a toggle.
+    """
+
+    def __init__(self, label: str, value: Any, depth: int, path: list) -> None:
+        super().__init__()
+        self._label = label
+        self._value = value
+        self._depth = depth
+        self._path = path
+        self.can_focus = False  # focus lives on the inner widget
+
+    @property
+    def path(self) -> list:
+        return self._path
+
+    @property
+    def original_value(self) -> Any:
+        return self._value
+
+    def result_value(self) -> Any:
+        raise NotImplementedError
+
+    def focus_target(self):
+        raise NotImplementedError
+
+    def focus_input(self) -> None:
+        self.focus_target().focus()
+
+
+class FieldRow(EditableRow):
     DEFAULT_CSS = """
     FieldRow {
         height: 1;
@@ -86,33 +120,48 @@ class FieldRow(Horizontal):
     }
     """
 
-    def __init__(self, label: str, value: Any, depth: int, path: list) -> None:
-        super().__init__()
-        self._label = label
-        self._value = value
-        self._depth = depth
-        self._path = path
-        self.can_focus = False  # row itself not focusable, only the input inside
-
     def compose(self) -> ComposeResult:
         indent = " " * (self._depth * INDENT)
         yield Label(f"{indent}{self._label}", markup=False)
         yield Input(value=str(self._value))
 
     @property
-    def path(self) -> list:
-        return self._path
-
-    @property
-    def original_value(self) -> Any:
-        return self._value
-
-    @property
     def input_value(self) -> str:
         return self.query_one(Input).value
 
-    def focus_input(self) -> None:
-        self.query_one(Input).focus()
+    def result_value(self) -> Any:
+        return coerce(self._value, self.input_value)
+
+    def focus_target(self):
+        return self.query_one(Input)
+
+
+class BoolRow(EditableRow):
+    """A boolean leaf rendered with Textual's default Switch widget."""
+
+    DEFAULT_CSS = """
+    BoolRow {
+        height: 3;
+    }
+    BoolRow:focus-within {
+        background: $boost;
+    }
+    BoolRow Label {
+        color: $text-muted;
+        padding-top: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        indent = " " * (self._depth * INDENT)
+        yield Label(f"{indent}{self._label}", markup=False)
+        yield Switch(value=self._value)
+
+    def result_value(self) -> bool:
+        return self.query_one(Switch).value
+
+    def focus_target(self):
+        return self.query_one(Switch)
 
 
 # ── Tree traversal ────────────────────────────────────────────────────────────
@@ -125,6 +174,8 @@ def iter_rows(data: Any, depth: int = 0, path: list | None = None) -> Generator:
             if isinstance(v, (dict, list)):
                 yield SectionRow(f"{k}", depth)
                 yield from iter_rows(v, depth + 1, path + [k])
+            elif isinstance(v, bool):
+                yield BoolRow(f"{k}", v, depth, path + [k])
             else:
                 yield FieldRow(f"{k}", v, depth, path + [k])
     elif isinstance(data, list):
@@ -132,6 +183,8 @@ def iter_rows(data: Any, depth: int = 0, path: list | None = None) -> Generator:
             if isinstance(v, (dict, list)):
                 yield SectionRow(f"[{i}]", depth)
                 yield from iter_rows(v, depth + 1, path + [i])
+            elif isinstance(v, bool):
+                yield BoolRow(f"[{i}]", v, depth, path + [i])
             else:
                 yield FieldRow(f"[{i}]", v, depth, path + [i])
 
@@ -141,6 +194,7 @@ def iter_rows(data: Any, depth: int = 0, path: list | None = None) -> Generator:
 KNOWN_CONFIGS: list[tuple[str, str]] = [
     ("Activity-Network",       "/usr/share/vos-context-cues/assets/activity.json"),
     ("Activity-Postprocessor", "/usr/share/vos-context-cues/assets/activity-config.json"),
+    ("World-Cursor",           "/usr/share/vos-context-cues/assets/object-segmentation/world-cursor-config-hawaii.json"),
 ]
 
 
@@ -249,6 +303,7 @@ class ConfigEditor(App):
     #status { height: 1; padding: 0 2; color: $success; }
     #status.error { color: $error; }
     FieldRow Label { width: 40%; }
+    BoolRow Label { width: 40%; }
     """
 
     BINDINGS = [
@@ -355,8 +410,8 @@ class ConfigEditor(App):
             return
 
         self._rebuild_fields()
-        field_count = sum(1 for r in self.query(FieldRow))
-        self._set_status(f"Loaded · {field_count} editable fields · Ctrl+S push · Ctrl+R reload")
+        field_count = sum(1 for r in self.query(EditableRow))
+        self._set_status(f"Loaded · {field_count} editable fields · Space flips toggles · Ctrl+S push · Ctrl+R reload")
 
     def _rebuild_fields(self) -> None:
         scroll = self.query_one("#scroll", ScrollableContainer)
@@ -367,20 +422,20 @@ class ConfigEditor(App):
         self.call_after_refresh(self._focus_first)
 
     def _focus_first(self) -> None:
-        fields = list(self.query(FieldRow))
+        fields = list(self.query(EditableRow))
         if fields:
             fields[0].focus_input()
 
     # ── navigation ────────────────────────────────────────────────────────────
 
-    def _field_rows(self) -> list[FieldRow]:
-        return list(self.query(FieldRow))
+    def _field_rows(self) -> list[EditableRow]:
+        return list(self.query(EditableRow))
 
     def _focused_field_index(self) -> int:
         focused = self.focused
         for i, row in enumerate(self._field_rows()):
             try:
-                if row.query_one(Input) is focused:
+                if row.focus_target() is focused:
                     return i
             except Exception:
                 pass
@@ -416,8 +471,8 @@ class ConfigEditor(App):
         if not self.device_path:
             return
         data = json.loads(json.dumps(self.original))
-        for row in self.query(FieldRow):
-            set_by_path(data, row.path, coerce(row.original_value, row.input_value))
+        for row in self.query(EditableRow):
+            set_by_path(data, row.path, row.result_value())
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
                 json.dump(data, tmp, indent=2)
@@ -450,7 +505,8 @@ Arguments:
 
 Navigation:
   ↑ / ↓          Move between editable fields
-  Enter           Confirm a custom path on the home screen
+  Space           Flip the focused True/False toggle
+  Enter           Flip a toggle, or confirm a custom path on the home screen
   Esc             Go back to home screen; quit from home screen
 
 Actions:
@@ -462,6 +518,7 @@ Actions:
 Known configs (selectable from home screen):
   Activity-Network       /usr/share/vos-context-cues/assets/activity.json
   Activity-Postprocessor /usr/share/vos-context-cues/assets/activity-config.json
+  World-Cursor           /usr/share/vos-context-cues/assets/object-segmentation/world-cursor-config-hawaii.json
 
 Examples:
   specs-edit-json
