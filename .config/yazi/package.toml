@@ -1,17 +1,17 @@
 [[plugin.deps]]
 use = "yazi-rs/plugins:full-border"
-rev = "42f64c0"
-hash = "3996fc74044bc44144b323686f887e1"
+rev = "58c4f4e"
+hash = "f281261ff04ad7ec867c3f802a50835f"
 
 [[plugin.deps]]
 use = "dedukun/bookmarks"
-rev = "fbb7c00"
-hash = "1d231a808d3344546380df33daf43e91"
+rev = "9ef1254"
+hash = "92fbb5483657fa7976cdf4e0104e18e0"
 
 [[plugin.deps]]
 use = "f-ilic/simple-status"
-rev = "8e06a65"
-hash = "452bf35d07c08b6d4ab654b1b563b8da"
+rev = "ee59486"
+hash = "f10a9edd887712cd3f7f101471a0f571"
 
 [[plugin.deps]]
 use = "AnirudhG07/rich-preview"
