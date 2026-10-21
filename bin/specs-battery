@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Show left/right Specs battery levels and charging for each connected device."""
+
+import argparse
+import math
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+
+
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+BATTERY_FIELD = re.compile(r"^\s*([lr]_(?:soc|current)):\s*([+-]?\d+)\s*$", re.MULTILINE)
+
+# nrf-shell connection selectors. When the user supplies one, they are targeting a
+# single device, so we skip enumeration and query exactly what they asked for.
+CONNECTION_FLAGS = ("--uart", "--adb", "--ble", "--ble_adv", "--dummy", "--pair", "--force_uart")
+
+# Run inside the nrf-shell venv: list one line ("usbserial<TAB>location<TAB>device")
+# per connected Specs, using the NRF serial port that battery_status talks to. macOS
+# needs nrf_shell's patched comports() to get reliable interface strings, so this must
+# run under the same interpreter nrf-shell activates. Exit 3 means nrf_shell is missing.
+ENUMERATE_SNIPPET = r"""
+import sys
+try:
+    from nrf_shell.serial_stream.uart_device_finder.platform_uart_device_finder import comports
+    from nrf_shell.serial_stream.uart_device_finder import SerialPortType
+except Exception as error:
+    sys.stderr.write("import error: %s\n" % error)
+    sys.exit(3)
+
+target = SerialPortType.interface_string_for_port(SerialPortType.NRF)
+ports = [p for p in comports() if p.description and p.description != "n/a" and p.location]
+ports.sort(key=lambda p: (p.location, p.device))
+seen = set()
+for port in ports:
+    if not port.interface or target not in port.interface:
+        continue
+    serial = port.serial_number or ("loc:" + str(port.location))
+    if serial in seen:
+        continue
+    seen.add(serial)
+    sys.stdout.write("%s\t%s\t%s\n" % (serial, port.location, port.device))
+"""
+
+# The USB composite serial is long and can change across re-enumeration. When the SoC's
+# adb gadget is up, its per-function USB descriptors ("<adbserial>_app" / "_cv") sit as
+# siblings of the NRF port under the same USB hub, so we can recover the stable adb
+# serial purely from ioreg -- no adb connection and no booting the device.
+ADB_FUNCTION_SERIAL = re.compile(r'"USB Serial Number" = "(.+?)_(?:app|cv)"')
+IOREG_LOCATION_ID = re.compile(r"@([0-9a-fA-F]{6,})")
+
+
+def positive_seconds(value):
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive number")
+    return seconds
+
+
+def location_hub(location):
+    """Drop the last USB port from a location, e.g. '1-1.3' -> '1-1'."""
+    return location.rpartition(".")[0] or location
+
+
+def hub_from_location_id(location_id):
+    """Decode a macOS USB locationID (hex) to a hub string, e.g. 0x01120000 -> '1-1'."""
+    value = int(location_id, 16)
+    ports = []
+    for shift in range(20, -1, -4):
+        nibble = (value >> shift) & 0xF
+        if nibble == 0:
+            break
+        ports.append(str(nibble))
+    bus = (value >> 24) & 0xFF
+    return location_hub(f"{bus}-" + ".".join(ports)) if ports else str(bus)
+
+
+def adb_serials_by_hub(timeout):
+    """Map USB hub -> adb device serial for any booted Specs, read from ioreg.
+
+    Best effort: returns {} if ioreg is unavailable or nothing is booted.
+    """
+    try:
+        result = subprocess.run(
+            ["ioreg", "-p", "IOUSB", "-l", "-w", "0"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+
+    mapping = {}
+    for block in re.split(r"\n[ |]*\+-o ", result.stdout):
+        serial = ADB_FUNCTION_SERIAL.search(block)
+        location_id = IOREG_LOCATION_ID.search(block.split("\n", 1)[0])
+        if serial and location_id:
+            mapping.setdefault(hub_from_location_id(location_id.group(1)), serial.group(1))
+    return mapping
+
+
+def nrf_shell_command():
+    # A local wrapper is usually "nrf-shell"; the pipx entry point is "nrf_shell".
+    for name in ("nrf-shell", "nrf_shell"):
+        sibling = Path(__file__).resolve().with_name(name)
+        command = str(sibling) if sibling.is_file() else shutil.which(name)
+        if command is not None:
+            return command
+    raise RuntimeError("nrf-shell (or nrf_shell) was not found beside this script or on PATH")
+
+
+def venv_python():
+    """Return the python inside nrf-shell's venv, or None if it can't be resolved."""
+    try:
+        wrapper = Path(nrf_shell_command())
+        text = wrapper.read_text(errors="replace")
+    except (OSError, RuntimeError):
+        return None
+    match = re.search(r"source\s+(\S+)/bin/activate", text)
+    if match:
+        python = Path(match.group(1)) / "bin" / "python3"
+        return str(python) if python.is_file() else None
+    # pipx entry points are Python scripts whose shebang is the venv interpreter.
+    shebang = re.match(r"#!\s*(\S*python[\d.]*)\s*$", text.split("\n", 1)[0])
+    if shebang and Path(shebang.group(1)).is_file():
+        return shebang.group(1)
+    return None
+
+
+def discover_devices(timeout):
+    """List connected Specs as (serial, device) pairs.
+
+    Returns None when enumeration is unavailable (no venv / nrf_shell import),
+    signalling the caller to fall back to nrf-shell's own default detection.
+    """
+    python = venv_python()
+    if python is None:
+        return None
+    try:
+        result = subprocess.run(
+            [python, "-c", ENUMERATE_SNIPPET],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"device discovery timed out after {timeout:g}s") from None
+    if result.returncode == 3:
+        return None
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"could not enumerate Specs devices\n{detail}")
+
+    devices = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) == 3 and parts[2]:
+            usbserial, location, device = parts
+            devices.append((usbserial, location, device))
+    return devices
+
+
+def read_battery(nrf_args, timeout):
+    command = nrf_shell_command()
+    with subprocess.Popen(
+        [command, *nrf_args, "--commands", "battery_status new"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    ) as process:
+        try:
+            output, _ = process.communicate(timeout=timeout)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            if isinstance(error, KeyboardInterrupt):
+                raise
+            raise RuntimeError(
+                f"nrf-shell timed out after {timeout:g}s; check the connection "
+                "and close any other nrf-shell session"
+            ) from None
+
+    output = ANSI_ESCAPE.sub("", output).replace("\r", "")
+    if process.returncode:
+        if "No serial device detected" in output:
+            raise RuntimeError("No Specs connected. Connect your Specs and try again.")
+        if re.search(r"Serial port .+ is in use!", output):
+            raise RuntimeError(
+                "nrf_shell is in use. Please close the Companion app or another "
+                "nrf-shell session, then try again."
+            )
+        raise RuntimeError(f"nrf-shell exited with status {process.returncode}\n{output.strip()}")
+
+    fields = {key: int(value) for key, value in BATTERY_FIELD.findall(output)}
+    missing = [key for key in ("l_soc", "r_soc") if key not in fields]
+    if missing:
+        raise RuntimeError(f"battery response is missing {', '.join(missing)}\n{output.strip()}")
+    for key in ("l_soc", "r_soc"):
+        if not 0 <= fields[key] <= 100:
+            raise RuntimeError(f"invalid {key}: {fields[key]} (expected 0-100)")
+    return fields
+
+
+def print_battery(fields, serial=None):
+    color = sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+    print(f"Specs {serial} battery" if serial else "Specs battery")
+    for side, label in (("l", "Left"), ("r", "Right")):
+        soc = fields[f"{side}_soc"]
+        current = fields.get(f"{side}_current")
+        if current is None:
+            status = "Charging unknown (current unavailable)"
+        elif current > 0:
+            status = f"Charging (+{current} mA)"
+        elif current < 0:
+            status = f"Discharging ({current} mA)"
+        else:
+            status = "Not charging (0 mA)"
+        filled = (soc + 5) // 10
+        level = f"[{'#' * filled}{'-' * (10 - filled)}] {soc:3d}%"
+        if color:
+            code = 31 if soc <= 20 else 33 if soc <= 50 else 32
+            level = f"\033[{code}m{level}\033[0m"
+        print(f"  {label:<5} {level}  {status}")
+
+
+def uses_explicit_connection(nrf_args):
+    return any(
+        arg == flag or arg.startswith(flag + "=")
+        for arg in nrf_args
+        for flag in CONNECTION_FLAGS
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Read left/right battery SoC using nrf-shell battery_status new.",
+        epilog=(
+            "Every connected Specs is queried and labeled by its USB serial. Pass a "
+            "connection selector (e.g. --uart /dev/cu.usbmodem123 or --adb) to target a "
+            "single device; other options are forwarded to nrf-shell. Charging is inferred "
+            "from instantaneous battery current: positive charges, negative discharges, "
+            "zero means no net charge. This does not indicate cable presence."
+        ),
+        allow_abbrev=False,
+    )
+    parser.add_argument("--timeout", type=positive_seconds, default=20, metavar="SECONDS",
+                        help="maximum query time per device (default: 20)")
+    args, nrf_args = parser.parse_known_args()
+    if nrf_args[:1] == ["--"]:
+        nrf_args = nrf_args[1:]
+    if any(arg == "--commands" or arg.startswith("--commands=") for arg in nrf_args):
+        parser.error("specs-battery supplies its own battery_status command")
+
+    try:
+        # Explicit target, or enumeration unavailable: defer to nrf-shell's own detection.
+        devices = None if uses_explicit_connection(nrf_args) else discover_devices(args.timeout)
+        if devices is None:
+            print_battery(read_battery(nrf_args, args.timeout))
+            return 0
+        if not devices:
+            raise RuntimeError("No Specs connected. Connect your Specs and try again.")
+
+        # Prefer the stable adb serial when the device is booted; otherwise fall back to
+        # the USB composite serial so every device still gets a label.
+        adb_serials = adb_serials_by_hub(args.timeout)
+        printed = 0
+        status = 0
+        for usbserial, location, device in devices:
+            serial = adb_serials.get(location_hub(location), usbserial)
+            try:
+                fields = read_battery([*nrf_args, "--uart", device], args.timeout)
+            except (OSError, RuntimeError) as error:
+                print(f"specs-battery [{serial}]: {error}", file=sys.stderr)
+                status = 1
+                continue
+            if printed:
+                print()
+            print_battery(fields, serial)
+            printed += 1
+        return status
+    except (OSError, RuntimeError) as error:
+        print(f"specs-battery: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
