@@ -56,7 +56,9 @@ local function setup()
 		
 		-- Modified date
 		if h.cha.mtime then
-			local mtime = os.date("%Y-%m-%d %H:%M", math.floor(h.cha.mtime))
+			local t = h.cha.mtime
+			local mtime = type(t) == "number" and os.date("%Y-%m-%d %H:%M", math.floor(t))
+				or t:format("%Y-%m-%d %H:%M")
 			table.insert(parts, ui.Span(mtime .. " "):fg("green"))
 		end
 		
