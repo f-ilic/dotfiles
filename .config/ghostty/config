@@ -20,3 +20,5 @@ keybind = alt+cmd+i=unbind
 keybind = cmd+r=prompt_surface_title
 
 term=xterm-ghostty
+# per-machine overrides (gitignored)
+config-file = ?config.local

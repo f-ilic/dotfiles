@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+
+# apps that rewrite their own state into the config dir
+.config/micro/buffers/
+.config/micro/backups/
+.config/git/gitk
+
+# per-machine overrides: never tracked, created on each machine
+.config/zsh/local.zsh
+
+# per-machine ghostty overrides (see start.sh)
+.config/ghostty/config.local

@@ -4,3 +4,8 @@ vscode/*
 .zshrc
 .git/*
 README.md
+\.gitignore
+\.DS_Store
+__pycache__
+\.superpowers
+start\.sh
