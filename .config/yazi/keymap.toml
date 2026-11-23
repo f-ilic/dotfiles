@@ -19,9 +19,9 @@ on = [ "l" ]
 run = "enter"
 desc = "Enter directory or open file"
 
-# [[mgr.prepend_keymap]]      # Enable this in MacOS / the PC that you have locally. Disable on remote.
-# on = "y"
-# run = [ "yank", "plugin clippy" ]
+[[mgr.prepend_keymap]]      # yank + copy to the macOS clipboard; the clippy plugin is a no-op off macOS, so no per-machine edit
+on = "y"
+run = [ "yank", "plugin clippy" ]
 # ------------ ------------------- ------------
 
 [[mgr.prepend_keymap]]
