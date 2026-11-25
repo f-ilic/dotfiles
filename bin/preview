@@ -1,9 +1,8 @@
 #!/bin/bash
-# Full-screen preview: chafa for images, $EDITOR for everything else
+# Full-screen preview: chafa for images, rich + less for everything else
 # Designed for use inside tmux over SSH
 
-ext="${1##*.}"
-ext="${ext,,}" # lowercase
+ext="$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')" # lowercase (${x,,} needs bash 4; macOS ships 3.2)
 
 case "$ext" in
     png|jpg|jpeg|gif|bmp|webp|tiff|tif|svg|ico)
