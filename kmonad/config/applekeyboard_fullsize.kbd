@@ -1,3 +1,7 @@
+;; Apple Magic Keyboard with Numeric Keypad. Cmd and Option are put in PC order (Cmd acts as Alt, Option as Super);
+;; the nav layer is the one from x1.kbd. The serial number in the device name is a glob, so any unit of this model matches.
+;; device: /dev/input/by-id/usb-Apple_Inc._Magic_Keyboard_with_Numeric_Keypad_*-if01-event-kbd
+
 (defcfg
   input  (device-file "/dev/input/by-id/usb-Apple_Inc._Magic_Keyboard_with_Numeric_Keypad_F0T2037003NJKNQAJ-if01-event-kbd")
   output (uinput-sink "kmonad")

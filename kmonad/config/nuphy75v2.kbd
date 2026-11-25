@@ -1,3 +1,6 @@
+;; NuPhy Air75 V2 (2.4 GHz dongle). Same layers as x1.kbd.
+;; device: /dev/input/by-id/usb-Nordic_Semiconductor_NuPhy_Air75_V2_Dongle-event-kbd
+
 (defcfg
   input  (device-file "/dev/input/by-id/usb-Nordic_Semiconductor_NuPhy_Air75_V2_Dongle-event-kbd")
   output (uinput-sink "kmonad")

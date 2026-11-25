@@ -1,0 +1,19 @@
+[Unit]
+Description=kmonad keyboard remap (%i)
+After=local-fs.target
+# keyboards come and go (USB dongle, replug): without this systemd gives up after five quick failures
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# kmonad's uinput output needs the module loaded; the leading "-" means "carry on if it is built in"
+ExecStartPre=-/usr/bin/env modprobe uinput
+# install.sh fills in the real path of the kmonad binary here
+ExecStart=@KMONAD@ /etc/kmonad/%i.kbd
+Restart=always
+RestartSec=3
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

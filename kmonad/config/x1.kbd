@@ -1,3 +1,10 @@
+;; ThinkPad X1 Carbon internal keyboard.
+;; Hold Caps Lock for the nav layer, the Linux twin of the Alt layer in .hammerspoon/Spoons/KeyRemap:
+;; ijkl arrows, u/o home/end, n/m page up/down, h backspace, ; delete, space enter, q escape.
+;; Every other key sends Alt+key while Caps is held.
+;; install.sh reads this line to find the keyboard; a glob is fine:
+;; device: /dev/input/by-path/platform-i8042-serio-0-event-kbd
+
 (defcfg
   input  (device-file "/dev/input/by-path/platform-i8042-serio-0-event-kbd")
   output (uinput-sink "kmonad")
