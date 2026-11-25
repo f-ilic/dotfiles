@@ -1,20 +1,25 @@
 # Dotfiles
 
-Works on macOS and Linux. Nothing tracked in here gets edited per machine: OS differences are detected in code, and
-per-machine settings live in gitignored local files.
+Works on macOS and Linux. OS differences are detected in code where possible, and per-machine settings live in
+gitignored local files instead of edits to tracked ones. Known gap: the ghostty config needs ghostty 1.2+ for
+`cmd+r=prompt_surface_title` (an older ghostty just reports that one line as invalid).
 
 ## Every machine
 
     git pull && stow .
 
+If a pull removed or renamed files, run `stow -R .` once to clear their old links.
+
 ## First time on a machine, or when `stow .` complains
 
-    ./start.sh            # TUI: resolves stow conflicts, ~/.zshrc bootstrap, local override files
-    ./start.sh --check    # the same checks without a UI (stdlib only); exits 1 if something blocks stow
+    ./start.sh            # one screen: shows what it will do, press Apply (Enter)
+    ./start.sh --check    # the same status without a UI (stdlib only); exits 1 if something blocks stow
+
+No options. Apply moves files that block `stow .` to `~/.dotfiles-backup/<timestamp>/` and links the repo's copies,
+adds the line that loads `~/.config/zsh/init.zsh` to `~/.zshrc` if it is missing, and runs `stow .`. Nothing is
+deleted. Anything it can't safely fix (a symlink or directory in the way) is listed as "needs you".
 
 Needs `stow`. The TUI runs through `uv` in a throwaway environment, so nothing is installed into system Python.
-It never deletes anything: a file it replaces is moved to `~/.dotfiles-backup/<timestamp>/`, and every change is
-listed and confirmed before it happens.
 
 ## Per-machine settings (never tracked)
 
@@ -24,7 +29,7 @@ listed and confirmed before it happens.
 | ghostty | `~/.config/ghostty/config.local`, pulled in by `config-file = ?config.local` in the tracked config |
 | blocks that installers append (conda, gcloud, ...) and anything secret | `~/.zshrc` (untracked) |
 
-Secrets stay in `~/.zshrc`, outside the repo directory; the setup tool never moves them.
+Keep secrets in `~/.zshrc` (untracked) or the keychain, never in this repo.
 
 ## OS-specific parts
 

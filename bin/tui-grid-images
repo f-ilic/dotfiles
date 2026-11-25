@@ -1,4 +1,8 @@
-#!/Users/filic/miniconda3/envs/ml/bin/python
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["textual==8.2.1"]
+# ///
 """Textual TUI for grid-images — create a photo collage from images in a directory."""
 
 import os
