@@ -30,6 +30,7 @@ import plistlib
 import pwd
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -56,7 +57,10 @@ CONFLICT_PATTERNS = [
 ]
 
 # Where to look. Module-level so the tests can point them into a sandbox.
-EXTRA_PATH = [HOME / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/snap/bin")]
+EXTRA_PATH = [  # where tools live that a non-login shell's PATH often misses
+    HOME / "bin", HOME / ".local/bin", HOME / ".cargo/bin", HOME / ".fzf/bin",
+    Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/snap/bin"),
+]
 BREW_CANDIDATES = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
 APP_DIRS = [Path("/Applications"), HOME / "Applications"]
 FONT_DIRS = [HOME / "Library/Fonts", Path("/Library/Fonts")]
@@ -746,9 +750,13 @@ def apply_live(plan: Plan, log: Callable[[str, str], None]) -> bool:
     """Run in the real terminal: sudo can prompt, installers print as they go."""
     global LIVE
     LIVE = True
+    # Ctrl-C at a sudo or apt prompt has to stop that command, not this tool. A handler that does nothing (unlike "ignore")
+    # is reset to the default in the child, so the child still dies, while we carry on and report the failed step.
+    previous = signal.signal(signal.SIGINT, lambda *_: None)
     try:
         return run_plan(plan, log, announce=lambda d: print(f"\n\033[1m▶ {d}\033[0m", flush=True))
     finally:
+        signal.signal(signal.SIGINT, previous)
         LIVE = False
 
 
