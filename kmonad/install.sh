@@ -6,7 +6,8 @@
 #   kmonad/install.sh --remove   stop and remove the services again
 #
 # Each config names its keyboard in a header line:   ;; device: /dev/input/by-id/usb-...*-event-kbd
-# (a glob is fine, so a serial number in the path does not tie a config to one unit). The first match is written into a
+# (a glob is fine, so a serial number in the path does not tie a config to one unit). A config can also name old units it
+# supersedes with ';; replaces: keyboard_old.service' lines (keyboard_<name>.service is always retired). The first match is written into a
 # copy of the config under /etc/kmonad/, and `kmonad --dry-run` has to accept that copy before anything is touched.
 # One template unit (systemd/kmonad@.service) runs them all, with the real path of the kmonad binary filled in.
 # Run it as yourself: it uses sudo only for the steps that need it. Re-run it after editing a config.
@@ -55,6 +56,11 @@ resolve_device() {  # first existing match of a glob
     return 1
 }
 
+legacy_units() {  # old units a config supersedes: keyboard_<name>.service, plus any ";; replaces: unit.service" header lines
+    printf 'keyboard_%s.service\n' "$1"
+    sed -n 's/^;; replaces:[[:space:]]*//p' "$2"
+}
+
 each_config() {  # prints "name<TAB>path" for every config
     local cfg
     for cfg in "$CONFIG_DIR"/*.kbd; do
@@ -99,11 +105,13 @@ cmd_install() {
     $SUDO install -d -m 755 "$ETC_DIR"
     $SUDO install -m 644 "$tmp/kmonad@.service" "$UNIT_DIR/kmonad@.service"
     for name in $todo; do
-        if [[ -f "$UNIT_DIR/keyboard_$name.service" ]]; then  # the old hand-copied unit would grab the same keyboard twice
-            $SUDO systemctl disable --now "keyboard_$name.service" || true
-            $SUDO rm -f "$UNIT_DIR/keyboard_$name.service"
-            say "removed the old keyboard_$name.service"
-        fi
+        while IFS= read -r unit; do  # an old hand-copied unit would grab the same keyboard twice
+            if [[ -f "$UNIT_DIR/$unit" ]]; then
+                $SUDO systemctl disable --now "$unit" || true
+                $SUDO rm -f "$UNIT_DIR/$unit"
+                say "removed the old $unit"
+            fi
+        done < <(legacy_units "$name" "$CONFIG_DIR/$name.kbd")
         $SUDO install -m 644 "$tmp/$name.kbd" "$ETC_DIR/$name.kbd"
     done
     $SUDO systemctl daemon-reload

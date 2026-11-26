@@ -1,0 +1,43 @@
+;; Apple Magic Keyboard, compact (no number pad), e.g. the white one on beast. Derived from apple_fullsize.kbd by
+;; dropping the f13-f15 columns and the fn, home, pgup, del, end, pgdn columns it doesn't have: same Cmd/Option swap to PC order,
+;; same nav layer. The glob stops at "Magic_Keyboard_F" so it never matches the one with a number pad.
+;; replaces: keyboard_applekeyboard_work.service
+;; device: /dev/input/by-id/usb-Apple_Inc._Magic_Keyboard_F*-if01-event-kbd
+
+(defcfg
+  input  (device-file "/dev/input/by-id/usb-Apple_Inc._Magic_Keyboard_F0T2176RK6A18DTA1-if01-event-kbd")
+  output (uinput-sink "kmonad")
+  fallthrough true
+  allow-cmd true
+)
+
+(defalias
+navlayer (layer-toggle nav)
+)
+
+(defsrc
+  esc      f1       f2       f3       f4       f5       f6       f7       f8       f9       f10      f11      f12
+  grv      1        2        3        4        5        6        7        8        9        0        -        =        bspc
+  tab      q        w        e        r        t        y        u        i        o        p        [        ]        \
+  caps     a        s        d        f        g        h        j        k        l        ;        '        ret
+  lsft     z        x        c        v        b        n        m        ,        .        /        rsft     up
+  lctl     lmet     lalt     spc      rmet     ralt     rctl     left     down     right
+)
+
+(deflayer base
+  esc      f1       f2       f3       f4       f5       f6       f7       f8       f9       f10      f11      f12
+  grv      1        2        3        4        5        6        7        8        9        0        -        =        bspc
+  tab      q        w        e        r        t        y        u        i        o        p        [        ]        \
+  @navlayer  a        s        d        f        g        h        j        k        l        ;        '        ret
+  lsft     z        x        c        v        b        n        m        ,        .        /        rsft     up
+  lctl     lalt     lmet     spc      rmet     ralt     rctl     left     down     right
+)
+
+(deflayer nav
+  esc      A-f1     A-f2     A-f3     A-f4     A-f5     A-f6     A-f7     A-f8     A-f9     A-f10    A-f11    A-f12
+  grv      A-1      A-2      A-3      A-4      A-5      A-6      A-7      A-8      A-9      A-0      A--      A-=      A-bspc
+  tab      esc      A-w      A-e      A-r      A-t      A-y      home     up       end      A-p      A-[      A-]      A-\
+  lalt     A-a      A-s      A-d      A-f      A-g      bks      left     down     right    del      A-'      A-ret
+  lsft     A-z      A-x      A-c      A-v      A-b      pgup     pgdn     A-,      A-.      A-/      rsft     up
+  lctl     lctl     lmet     ret      rmet     ralt     rctl     left     down     right
+)

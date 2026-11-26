@@ -64,7 +64,9 @@ On a Linux desktop `./start.sh` installs the kmonad binary. Then, once per machi
 
 Each `kmonad/config/*.kbd` names its keyboard in a `;; device:` header (a glob, so a serial number doesn't tie it to
 one unit). The script checks every config with `kmonad --dry-run` before it changes anything, then runs them all through
-one `kmonad@.service`. Re-run it after editing a config.
+one `kmonad@.service`. Re-run it after editing a config. A config can also list old hand-made units it supersedes with
+`;; replaces: keyboard_old.service` lines, which the script disables and removes first so two kmonads never grab one keyboard.
+Configs: `x1`, `nuphy75v2`, `apple_fullsize` (with number pad), `apple_tkl` (compact Magic Keyboard).
 
 ## bin/
 
